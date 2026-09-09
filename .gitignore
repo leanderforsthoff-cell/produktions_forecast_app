@@ -1,0 +1,15 @@
+.vscode/
+.DS_Store
+
+.venv/
+venv/
+env/
+
+.env
+service-account-key.json
+*.json
+.venv
+
+__pycache__/
+*.py[cod]
+*$py.class
