@@ -60,23 +60,21 @@ def fetch_current_inventory(article_list=TARGET_ARTICLES):
     return df
 
 def fetch_historical_sales(article_list=TARGET_ARTICLES):
-    """
-    Holt die historischen Verkaufsdaten aus shipmentitems, 
-    aggregiert pro Artikel und Monat.
-    """
     client = get_bq_client()
     
     query = """
         SELECT 
             articleNumber AS Artikelnummer,
-            -- Datum auf den 1. des Monats normalisieren (für Gruppierung)
-            DATE_TRUNC(DATE(TIMESTAMP_MILLIS(createdDate)), MONTH) AS Verkaufsmonat,
+            -- Expliziter Cast zu INT64, um String-Fehler bei Unix-Timestamps zu vermeiden
+            DATE_TRUNC(DATE(TIMESTAMP_MILLIS(CAST(createdDate AS INT64))), MONTH) AS Verkaufsmonat,
             SUM(CAST(quantity AS FLOAT64)) AS Verkaufsmenge
         FROM 
             `pollymain.weclapp.shipmentitems`
         WHERE 
             articleNumber IN UNNEST(@article_numbers)
             AND createdDate IS NOT NULL
+            -- Wir vergleichen saubere Timestamps miteinander
+            AND TIMESTAMP_MILLIS(CAST(createdDate AS INT64)) >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 36 MONTH))
         GROUP BY 
             articleNumber,
             Verkaufsmonat
@@ -92,8 +90,6 @@ def fetch_historical_sales(article_list=TARGET_ARTICLES):
     )
     
     df = client.query(query, job_config=job_config).to_dataframe()
-    
-    # Sicherstellen, dass das Datum ein echtes Pandas-Datetime-Objekt ist
     df['Verkaufsmonat'] = pd.to_datetime(df['Verkaufsmonat'])
     df['Verkaufsmenge'] = df['Verkaufsmenge'].fillna(0).astype(int)
     

@@ -31,20 +31,15 @@ st.title("📦 Produktions-Forecast & Planung")
 
 # --- 2. DATEN LADEN (mit Cache, damit es im Meeting schnell bleibt) ---
 @st.cache_data
-def load_and_prepare_data():
-    # 1. Bestände holen
+def load_and_prepare_data(target_months):
     inventory = fetch_current_inventory()
-    
-    # 2. Historie holen
     history = fetch_historical_sales()
     
-    # 3. Forecast auf Basis echter Historie berechnen
-    forecast = generate_system_forecast(inventory, history)
+    # Hier übergeben wir jetzt die Monate an die neue Logik
+    forecast = generate_system_forecast(inventory, history, target_months)
     
-    # Zusammenführen
     df_merged = pd.merge(inventory, forecast, on="Artikelnummer", how="left")
     
-    # Initiale Spalten für manuelle Eingabe (Standardmäßig übernehmen wir das System)
     df_merged["Manuell_M1"] = df_merged["System_M1"].fillna(0).astype(int)
     df_merged["Manuell_M2"] = df_merged["System_M2"].fillna(0).astype(int)
     df_merged["Manuell_M3"] = df_merged["System_M3"].fillna(0).astype(int)
@@ -53,7 +48,7 @@ def load_and_prepare_data():
 
 # State initialisieren
 if "plan_data" not in st.session_state:
-    st.session_state.plan_data = load_and_prepare_data()
+    st.session_state.plan_data = load_and_prepare_data(target_month_dates)
 
 # --- 3. EINGABEBEREICH (Die Meeting-Ansicht) ---
 st.header("1. Erwarteter Abverkauf (Forecast anpassen)")
