@@ -3,15 +3,54 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 import streamlit as st
 import pandas as pd
-from src.data_integration import fetch_current_inventory, fetch_historical_sales, save_forecast_to_bq
+from src.data_integration import fetch_current_inventory, fetch_historical_sales, save_forecast_to_bq, fetch_available_articles, fetch_bom_for_articles
 from src.forecasting import generate_system_forecast
 from src.inventory_math import calculate_production_needs
 import datetime
 
+st.set_page_config(page_title="Produktions-Forecast", layout="wide")
+st.title("📦 Produktions-Forecast & Planung")
+
+# --- 1. DATEN FÜR SIDEBAR LADEN ---
+@st.cache_data
+def load_article_master():
+    return fetch_available_articles()
+
+df_articles = load_article_master()
+
+# --- 2. SIDEBAR (UI FÜR DIE AUSWAHL) ---
+st.sidebar.header("⚙️ Einstellungen")
+st.sidebar.write("Wähle die Artikel für dieses Meeting:")
+
+# Vorauswahl
+TARGET_ARTICLES = [
+    "10024-C", 
+    "10025-C",
+    "10026-C",
+    "10027-C",
+    "10028-C",
+    "10029-C",
+    "10030-C",
+    "10031-C",
+    "10020-C"
+]
+
+# Wir suchen aus allen geladenen Artikeln genau die heraus, 
+# die in unserer TARGET_ARTICLES Liste stehen, um sie als Vorauswahl zu setzen.
+default_selection = df_articles[df_articles["Artikelnummer"].isin(TARGET_ARTICLES)]["Anzeige_Name"].tolist()
+
+# Multiselect-Dropdown mit der perfekten Vorauswahl
+selected_display_names = st.sidebar.multiselect(
+    "Artikel auswählen",
+    options=df_articles["Anzeige_Name"].tolist(),
+    default=default_selection 
+)
+
+# Umwandlung zurück in Artikelnummern
+selected_article_numbers = df_articles[df_articles["Anzeige_Name"].isin(selected_display_names)]["Artikelnummer"].tolist()
+# --- 3. MONATE & DATEN-LADEN ---
 def get_target_months():
-    """Generiert die echten Datums-Objekte für den 1. der nächsten 3 Monate"""
     heute = datetime.date.today()
-    # Den 1. des nächsten Monats berechnen
     m1 = (heute.replace(day=1) + datetime.timedelta(days=32)).replace(day=1)
     m2 = (m1 + datetime.timedelta(days=32)).replace(day=1)
     m3 = (m2 + datetime.timedelta(days=32)).replace(day=1)
@@ -19,25 +58,21 @@ def get_target_months():
 
 target_month_dates = get_target_months()
 
-# Labels für die Spalten (Deutsch formatiert, z.B. "Okt 2026")
 monate_de = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
 m1_label = f"{monate_de[target_month_dates[0].month - 1]} {target_month_dates[0].year}"
 m2_label = f"{monate_de[target_month_dates[1].month - 1]} {target_month_dates[1].year}"
 m3_label = f"{monate_de[target_month_dates[2].month - 1]} {target_month_dates[2].year}"
 
-# --- 1. SEITENKONFIGURATION ---
-st.set_page_config(page_title="Produktions-Forecast", layout="wide")
-st.title("📦 Produktions-Forecast & Planung")
-
-# --- 2. DATEN LADEN (mit Cache, damit es im Meeting schnell bleibt) ---
 @st.cache_data
-def load_and_prepare_data(target_months):
-    inventory = fetch_current_inventory()
-    history = fetch_historical_sales()
+def load_and_prepare_data(target_months, article_list):
+    # Wenn keine Artikel ausgewählt sind, leeren DataFrame zurückgeben
+    if not article_list:
+        return pd.DataFrame()
+        
+    inventory = fetch_current_inventory(article_list)
+    history = fetch_historical_sales(article_list)
     
-    # Hier übergeben wir jetzt die Monate an die neue Logik
     forecast = generate_system_forecast(inventory, history, target_months)
-    
     df_merged = pd.merge(inventory, forecast, on="Artikelnummer", how="left")
     
     df_merged["Manuell_M1"] = df_merged["System_M1"].fillna(0).astype(int)
@@ -46,9 +81,17 @@ def load_and_prepare_data(target_months):
     
     return df_merged
 
-# State initialisieren
-if "plan_data" not in st.session_state:
-    st.session_state.plan_data = load_and_prepare_data(target_month_dates)
+# State-Management: 
+# Wir merken uns, welche Artikelnummern zuletzt geladen wurden. 
+# Ändert sich die Auswahl, holen wir frische Daten aus BigQuery.
+if "last_selection" not in st.session_state or st.session_state.last_selection != selected_article_numbers:
+    st.session_state.plan_data = load_and_prepare_data(target_month_dates, selected_article_numbers)
+    st.session_state.last_selection = selected_article_numbers
+
+# Wenn gar nichts ausgewählt wurde, brechen wir hier höflich ab
+if not selected_article_numbers:
+    st.warning("👈 Bitte wähle links in der Seitenleiste mindestens einen Artikel aus, um mit der Planung zu beginnen.")
+    st.stop()
 
 # --- 3. EINGABEBEREICH (Die Meeting-Ansicht) ---
 st.header("1. Erwarteter Abverkauf (Forecast anpassen)")
@@ -121,3 +164,42 @@ if st.button("💾 Forecast speichern", type="primary"):
             st.success("Erfolgreich gespeichert! (Alte Speicherungen von diesem Meeting wurden sauber überschrieben).")
         except Exception as e:
             st.error(f"Fehler beim Speichern: {e}")
+
+# --- 6. ENTWICKLER-ANSICHT: STÜCKLISTEN (BOM) ---
+st.divider()
+st.header("🛠️ Entwickler-Bereich: Bestandteile (COGS)")
+st.write("Live-Abruf der Stücklisten für die aktuell ausgewählten Getränke.")
+
+with st.spinner("Lade Stücklisten aus pollymain.mart.COGS..."):
+    try:
+        # 1. Alle benötigten COGS-Daten auf einmal laden (gut für die Performance)
+        df_cogs = fetch_bom_for_articles(selected_article_numbers)
+        
+        if not df_cogs.empty:
+            # Hilfsspalte: Da productArticleNumber aus BQ als Zahl kommt, 
+            # wandeln wir sie hier sicher in einen String ohne Kommastellen um.
+            df_cogs["match_number"] = df_cogs["productArticleNumber"].astype(str).str.replace(r'\.0$', '', regex=True)
+            
+            # 2. Für jeden ausgewählten Artikel einen eigenen Expander bauen
+            # Wir nutzen zip(), um gleichzeitig den schönen Namen und die Artikelnummer zu haben
+            for display_name, art_nr in zip(selected_display_names, selected_article_numbers):
+                
+                # Wieder die Basisnummer berechnen (z.B. "10024-C" -> "10024")
+                base_nr = str(art_nr).split('-')[0]
+                
+                # Tabelle filtern
+                df_art_cogs = df_cogs[df_cogs["match_number"] == base_nr]
+                
+                # Eigenen ausklappbaren Bereich erstellen
+                with st.expander(f"📦 Stückliste: {display_name}"):
+                    if not df_art_cogs.empty:
+                        # Die Hilfsspalte blenden wir für die Anzeige wieder aus
+                        st.dataframe(df_art_cogs.drop(columns=["match_number"]), width='stretch')
+                        st.caption(f"{len(df_art_cogs)} Bestandteile für dieses Produkt gefunden.")
+                    else:
+                        st.info("Für dieses Produkt wurden keine Bestandteile in der COGS-Tabelle gefunden.")
+        else:
+            st.warning("Es wurden generell keine COGS-Daten für die aktuelle Auswahl gefunden.")
+            
+    except Exception as e:
+        st.error(f"Fehler beim Laden der COGS-Tabelle: {e}")

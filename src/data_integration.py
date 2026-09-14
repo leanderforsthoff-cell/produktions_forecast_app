@@ -7,6 +7,7 @@ import datetime
 # Lade die Umgebungsvariablen aus der .env Datei
 load_dotenv()
 
+"""
 TARGET_ARTICLES = [
     "10024-C", 
     "10025-C",
@@ -18,12 +19,40 @@ TARGET_ARTICLES = [
     "10031-C",
     "10020-C"
 ]
+"""
+
+def fetch_available_articles():
+    """Holt eine Liste aller relevanten Artikel (Nummer und Name) für das UI-Dropdown."""
+    client = get_bq_client()
+    
+    # Wir holen alle Artikel aus der Bestandstabelle inkl. Namen
+    query = """
+        SELECT DISTINCT 
+            stock.article_number AS Artikelnummer,
+            art.name AS Artikelname
+        FROM 
+            `pollymain.weclapp.article_totalStockQuantity` AS stock
+        LEFT JOIN
+            `pollymain.weclapp.article` AS art
+        ON 
+            stock.article_number = art.articleNumber
+        WHERE 
+            stock.article_number IS NOT NULL
+            AND art.active = TRUE
+            AND art.productionArticle = TRUE
+        ORDER BY 
+            Artikelname
+    """
+    df = client.query(query).to_dataframe()
+    # Formatieren als "Name (Nummer)" für das Dropdown
+    df["Anzeige_Name"] = df["Artikelname"] + " (" + df["Artikelnummer"] + ")"
+    return df
 
 def get_bq_client():
     """Initialisiert den BigQuery Client mit den Credentials aus der .env"""
     return bigquery.Client()
 
-def fetch_current_inventory(article_list=TARGET_ARTICLES):
+def fetch_current_inventory(article_list):
     """Holt den aggregierten Bestand inkl. Artikelnamen aus BigQuery."""
     client = get_bq_client()
 
@@ -59,7 +88,7 @@ def fetch_current_inventory(article_list=TARGET_ARTICLES):
     
     return df
 
-def fetch_historical_sales(article_list=TARGET_ARTICLES):
+def fetch_historical_sales(article_list):
     client = get_bq_client()
     
     query = """
@@ -148,3 +177,40 @@ def save_forecast_to_bq(edited_df, production_plan, target_months):
     # 3. Speichern (Tabelle wird angelegt, falls sie nach dem DELETE noch nicht / nicht mehr existiert)
     job_config = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND")
     client.load_table_from_dataframe(df_long, table_id, job_config=job_config).result()
+
+def fetch_bom_for_articles(article_list):
+    """
+    Holt die Stücklisten (Bill of Materials / COGS) für die ausgewählten Artikel.
+    Behebt das Problem von abweichenden Artikelnummern-Formaten (z.B. 10024-C vs 10024).
+    """
+    if not article_list:
+        return pd.DataFrame()
+
+    client = get_bq_client()
+    
+    # 1. Artikelnummern bereinigen: "10024-C" wird zu "10024"
+    # Wir splitten am Bindestrich und nehmen den ersten Teil.
+    base_numbers = [str(art).split('-')[0] for art in article_list]
+    # Duplikate entfernen, falls "10024-C" und "10024-D" existieren sollten
+    base_numbers = list(set(base_numbers))
+    
+    # 2. Query: Wir casten productArticleNumber zu STRING, 
+    # damit wir es sauber mit unserer base_numbers Liste vergleichen können.
+    query = """
+        SELECT 
+            *
+        FROM 
+            `pollymain.mart.COGS`
+        WHERE 
+            is_in_article_mapping = TRUE
+            AND CAST(productArticleNumber AS STRING) IN UNNEST(@base_numbers)
+    """
+    
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ArrayQueryParameter("base_numbers", "STRING", base_numbers)
+        ]
+    )
+    
+    df = client.query(query, job_config=job_config).to_dataframe()
+    return df
