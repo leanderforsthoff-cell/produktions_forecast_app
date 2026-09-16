@@ -179,26 +179,23 @@ def save_forecast_to_bq(edited_df, production_plan, target_months):
     client.load_table_from_dataframe(df_long, table_id, job_config=job_config).result()
 
 def fetch_bom_for_articles(article_list):
-    """
-    Holt die Stücklisten (Bill of Materials / COGS) für die ausgewählten Artikel.
-    Behebt das Problem von abweichenden Artikelnummern-Formaten (z.B. 10024-C vs 10024).
-    """
+    """Holt die Stücklisten inkl. Lieferantendaten für die ausgewählten Artikel."""
     if not article_list:
         return pd.DataFrame()
 
     client = get_bq_client()
+    base_numbers = list(set([str(art).split('-')[0] for art in article_list]))
     
-    # 1. Artikelnummern bereinigen: "10024-C" wird zu "10024"
-    # Wir splitten am Bindestrich und nehmen den ersten Teil.
-    base_numbers = [str(art).split('-')[0] for art in article_list]
-    # Duplikate entfernen, falls "10024-C" und "10024-D" existieren sollten
-    base_numbers = list(set(base_numbers))
-    
-    # 2. Query: Wir casten productArticleNumber zu STRING, 
-    # damit wir es sauber mit unserer base_numbers Liste vergleichen können.
     query = """
         SELECT 
-            *
+            productArticleNumber,
+            materialArticleNumber,
+            materialName,
+            CAST(quantity AS FLOAT64) AS quantity,
+            unitName,
+            supplierNumber,
+            company AS Lieferant,
+            CAST(procurementLeadDays AS INT64) AS procurementLeadDays
         FROM 
             `pollymain.mart.COGS`
         WHERE 
@@ -207,10 +204,40 @@ def fetch_bom_for_articles(article_list):
     """
     
     job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ArrayQueryParameter("base_numbers", "STRING", base_numbers)
-        ]
+        query_parameters=[bigquery.ArrayQueryParameter("base_numbers", "STRING", base_numbers)]
     )
+    return client.query(query, job_config=job_config).to_dataframe()
+
+def fetch_material_stock(material_numbers):
+    """
+    Holt den Bestand der Rohstoffe aus warehousestock.
+    Schneidet eventuelle '-C' Suffixe ab und summiert die Mengen.
+    """
+    if not material_numbers:
+        return pd.DataFrame()
+
+    client = get_bq_client()
     
+    # Da warehousestock teils -C hat, nutzen wir SPLIT in SQL, 
+    # um den vorderen Teil zu nehmen und ihn als INT64 zu casten.
+    query = """
+        SELECT 
+            CAST(SPLIT(articleNumber, '-')[OFFSET(0)] AS INT64) AS materialArticleNumber,
+            SUM(CAST(quantity AS FLOAT64)) AS Aktueller_Materialbestand
+        FROM 
+            `pollymain.mart.warehousestock`
+        WHERE 
+            articleNumber IS NOT NULL
+            AND CAST(SPLIT(articleNumber, '-')[OFFSET(0)] AS INT64) IN UNNEST(@mat_numbers)
+        GROUP BY 
+            materialArticleNumber
+    """
+    
+    # Umwandeln in Integer-Liste für die Query
+    mat_ints = [int(m) for m in material_numbers if pd.notnull(m)]
+    
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ArrayQueryParameter("mat_numbers", "INT64", mat_ints)]
+    )
     df = client.query(query, job_config=job_config).to_dataframe()
     return df
