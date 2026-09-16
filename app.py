@@ -68,15 +68,24 @@ TARGET_ARTICLES = [
     "10024-C", "10025-C", "10026-C", "10027-C", 
     "10028-C", "10029-C", "10030-C", "10031-C", "10020-C"
 ]
-default_selection = df_articles[df_articles["Artikelnummer"].isin(TARGET_ARTICLES)]["Anzeige_Name"].tolist()
+
+# 1. Dictionaries für blitzschnelles Mapping aufbauen
+# Name -> Nummer (für die Auswertung der Auswahl)
+name_to_num = dict(zip(df_articles["Anzeige_Name"], df_articles["Artikelnummer"]))
+# Nummer -> Name (für das Setzen der Default-Auswahl)
+num_to_name = dict(zip(df_articles["Artikelnummer"], df_articles["Anzeige_Name"]))
+
+# 2. Default-Selektion extrem schnell ermitteln
+default_selection = [num_to_name[nr] for nr in TARGET_ARTICLES if nr in num_to_name]
 
 selected_display_names = st.sidebar.multiselect(
     "Getränke für dieses Meeting:",
-    options=df_articles["Anzeige_Name"].tolist(),
+    options=list(name_to_num.keys()),
     default=default_selection 
 )
 
-selected_article_numbers = df_articles[df_articles["Anzeige_Name"].isin(selected_display_names)]["Artikelnummer"].tolist()
+# 3. Direkter Dictionary-Zugriff statt DataFrame-Filtering
+selected_article_numbers = [name_to_num[name] for name in selected_display_names]
 
 if not selected_article_numbers:
     st.warning("👈 Bitte wähle links in der Seitenleiste mindestens einen Artikel aus, um mit der Planung zu beginnen.")

@@ -1,27 +1,5 @@
 import pandas as pd
-import datetime
-
-def get_material_order_date(target_date, lead_time_days):
-    if pd.isnull(target_date):
-        return None
-    
-    if isinstance(target_date, str):
-        target_date = datetime.datetime.strptime(target_date, "%d.%m.%Y").date()
-    elif isinstance(target_date, datetime.datetime):
-        target_date = target_date.date()
-        
-    if pd.isna(lead_time_days):
-        safe_lead_time = 0
-    else:
-        safe_lead_time = int(lead_time_days)
-        
-    deadline = target_date - datetime.timedelta(days=safe_lead_time)
-    
-    if deadline.day >= 15:
-        return deadline.replace(day=15)
-    else:
-        prev_month_end = deadline.replace(day=1) - datetime.timedelta(days=1)
-        return prev_month_end.replace(day=15)
+from src.utils import calculate_order_deadline
 
 def calculate_material_requirements(production_plan, df_cogs, df_mat_stock):
     if production_plan.empty or df_cogs.empty:
@@ -100,7 +78,7 @@ def calculate_material_requirements(production_plan, df_cogs, df_mat_stock):
             safe_lead_time = 0 if pd.isna(row["Lead_Time_Days"]) else int(row["Lead_Time_Days"])
             safe_price = 0.0 if pd.isna(row["Einzelpreis"]) else float(row["Einzelpreis"])
             
-            order_date = get_material_order_date(row["Bedarfs_Datum"], row["Lead_Time_Days"])
+            order_date = calculate_order_deadline(row["Bedarfs_Datum"], row["Lead_Time_Days"], unit='days')
             orders.append({
                 "Lieferant": row["Lieferant"],
                 "Material_Name": row["Material_Name"],

@@ -1,25 +1,11 @@
 import pandas as pd
-import os
 from google.cloud import bigquery
 from dotenv import load_dotenv
 import datetime
+import streamlit as st
 
 # Lade die Umgebungsvariablen aus der .env Datei
 load_dotenv()
-
-"""
-TARGET_ARTICLES = [
-    "10024-C", 
-    "10025-C",
-    "10026-C",
-    "10027-C",
-    "10028-C",
-    "10029-C",
-    "10030-C",
-    "10031-C",
-    "10020-C"
-]
-"""
 
 def fetch_available_articles():
     """Holt eine Liste aller relevanten Artikel (Nummer und Name) für das UI-Dropdown."""
@@ -48,6 +34,7 @@ def fetch_available_articles():
     df["Anzeige_Name"] = df["Artikelname"] + " (" + df["Artikelnummer"] + ")"
     return df
 
+@st.cache_resource
 def get_bq_client():
     """Initialisiert den BigQuery Client mit den Credentials aus der .env"""
     return bigquery.Client()

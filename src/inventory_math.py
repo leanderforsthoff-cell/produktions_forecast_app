@@ -1,19 +1,6 @@
 import pandas as pd
 import math
-import datetime
-
-def get_order_date(target_date, lead_time_weeks):
-    """Berechnet das späteste Bestelldatum zum 15. des Monats."""
-    if target_date is None: 
-        return None
-        
-    deadline = target_date - datetime.timedelta(weeks=lead_time_weeks)
-    
-    if deadline.day >= 15:
-        return deadline.replace(day=15)
-    else:
-        prev_month_end = deadline.replace(day=1) - datetime.timedelta(days=1)
-        return prev_month_end.replace(day=15)
+from src.utils import calculate_order_deadline
 
 def calculate_production_needs(df_plan, target_months, constraints_dict):
     """
@@ -38,18 +25,18 @@ def calculate_production_needs(df_plan, target_months, constraints_dict):
         required_m1 = max(0, row["Manuell_M1"] + safety - bestand_start)
         prod_m1 = math.ceil(required_m1 / moq) * moq if required_m1 > 0 else 0
         bestand_ende_m1 = bestand_start + prod_m1 - row["Manuell_M1"]
-        order_m1 = get_order_date(m1_date, lead_time) if prod_m1 > 0 else None
+        order_m1 = calculate_order_deadline(m1_date, lead_time, unit='weeks') if prod_m1 > 0 else None
         
         # --- MONAT 2 ---
         required_m2 = max(0, row["Manuell_M2"] + safety - bestand_ende_m1)
         prod_m2 = math.ceil(required_m2 / moq) * moq if required_m2 > 0 else 0
         bestand_ende_m2 = bestand_ende_m1 + prod_m2 - row["Manuell_M2"]
-        order_m2 = get_order_date(m2_date, lead_time) if prod_m2 > 0 else None
+        order_m2 = calculate_order_deadline(m2_date, lead_time, unit='weeks') if prod_m2 > 0 else None
         
         # --- MONAT 3 ---
         required_m3 = max(0, row["Manuell_M3"] + safety - bestand_ende_m2)
         prod_m3 = math.ceil(required_m3 / moq) * moq if required_m3 > 0 else 0
-        order_m3 = get_order_date(m3_date, lead_time) if prod_m3 > 0 else None
+        order_m3 = calculate_order_deadline(m3_date, lead_time, unit='weeks') if prod_m3 > 0 else None
         
         results.append({
             "Artikelnummer": row["Artikelnummer"],
