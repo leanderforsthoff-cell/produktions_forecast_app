@@ -195,7 +195,8 @@ def fetch_bom_for_articles(article_list):
             unitName,
             supplierNumber,
             company AS Lieferant,
-            CAST(procurementLeadDays AS INT64) AS procurementLeadDays
+            CAST(procurementLeadDays AS INT64) AS procurementLeadDays,
+            CAST(articleunitprice AS FLOAT64) AS articleunitprice
         FROM 
             `pollymain.mart.COGS`
         WHERE 

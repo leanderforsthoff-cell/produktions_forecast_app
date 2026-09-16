@@ -33,6 +33,21 @@ def get_target_months():
 
 target_month_dates = get_target_months()
 
+def format_date_deadline(d):
+    """
+    Formatiert das Datum. Liegt es in der Vergangenheit, wird das heutige 
+    Datum als nächstmöglicher Aktionstag gesetzt und das alte Datum markiert.
+    """
+    if pd.isnull(d):
+        return "-"
+    
+    heute = datetime.date.today()
+    if d < heute:
+        # Ausgabe z.B.: "16.09.2026 🔴 (eig. 15.08.2026)"
+        return f"{heute.strftime('%d.%m.%Y')} 🔴 (eig. {d.strftime('%d.%m.%Y')})"
+    
+    return d.strftime("%d.%m.%Y")
+
 # UI-Labels für die Monate (z.B. "Okt 2026")
 monate_de = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
 m1_label = f"{monate_de[target_month_dates[0].month - 1]} {target_month_dates[0].year}"
@@ -40,7 +55,7 @@ m2_label = f"{monate_de[target_month_dates[1].month - 1]} {target_month_dates[1]
 m3_label = f"{monate_de[target_month_dates[2].month - 1]} {target_month_dates[2].year}"
 
 # ==========================================
-# 1. SIDEBAR (ARTIKEL-AUSWAHL)
+# 1. SIDEBAR (ARTIKEL & CONSTRAINTS)
 # ==========================================
 @st.cache_data
 def load_article_master():
@@ -48,10 +63,7 @@ def load_article_master():
 
 df_articles = load_article_master()
 
-st.sidebar.header("⚙️ Einstellungen")
-st.sidebar.write("Wähle die Artikel für dieses Meeting:")
-
-# Standard-Auswahl für das Meeting
+st.sidebar.header("⚙️ 1. Artikelauswahl")
 TARGET_ARTICLES = [
     "10024-C", "10025-C", "10026-C", "10027-C", 
     "10028-C", "10029-C", "10030-C", "10031-C", "10020-C"
@@ -59,17 +71,44 @@ TARGET_ARTICLES = [
 default_selection = df_articles[df_articles["Artikelnummer"].isin(TARGET_ARTICLES)]["Anzeige_Name"].tolist()
 
 selected_display_names = st.sidebar.multiselect(
-    "Artikel auswählen",
+    "Getränke für dieses Meeting:",
     options=df_articles["Anzeige_Name"].tolist(),
     default=default_selection 
 )
 
-# Konvertierung der Auswahl zurück in reine Artikelnummern
 selected_article_numbers = df_articles[df_articles["Anzeige_Name"].isin(selected_display_names)]["Artikelnummer"].tolist()
 
 if not selected_article_numbers:
     st.warning("👈 Bitte wähle links in der Seitenleiste mindestens einen Artikel aus, um mit der Planung zu beginnen.")
     st.stop()
+
+st.sidebar.divider()
+st.sidebar.header("📐 2. Parameter (MOQ & Puffer)")
+st.sidebar.write("Bestimme die Nebenbedingungen für die ausgewählten Produkte.")
+
+# Standard-Werte für das Sidebar-UI aufbauen
+default_constraints = []
+for name, nr in zip(selected_display_names, selected_article_numbers):
+    default_constraints.append({
+        "Artikelnummer": nr,
+        "Name": name.split(' (')[0], # Sauberer Name fürs UI
+        "MOQ": 2000,
+        "Mindestbestand": 100,
+        "Vorlaufzeit_Wochen": 4
+    })
+
+df_constraints_raw = pd.DataFrame(default_constraints)
+
+# Der interaktive Editor in der Seitenleiste
+edited_constraints_df = st.sidebar.data_editor(
+    df_constraints_raw,
+    disabled=["Artikelnummer", "Name"],
+    hide_index=True,
+    width='stretch'
+)
+
+# Umwandeln in ein Dictionary für unsere Mathematik-Funktionen
+constraints_dict = edited_constraints_df.set_index("Artikelnummer").to_dict(orient="index")
 
 # ==========================================
 # 2. DATEN LADEN & FORECAST EDITOR
@@ -122,14 +161,12 @@ st.divider()
 st.header("2. Produktionsbedarf & Bestelltermine")
 st.write("Bestelltermine basieren auf einer Bestellung zum 15. des Monats minus X Wochen Vorlaufzeit.")
 
-production_plan = calculate_production_needs(edited_df, target_month_dates)
-
+# HIER ÜBERGEBEN WIR DAS NEUE CONSTRAINTS-DICTIONARY!
+production_plan = calculate_production_needs(edited_df, target_month_dates, constraints_dict)
 # UI Aufbereitung der Produktionsdaten
 display_plan = production_plan.copy()
 for m in [1, 2, 3]:
-    display_plan[f"Bestelldatum_M{m}"] = display_plan[f"Bestelldatum_M{m}"].apply(
-        lambda d: d.strftime("%d.%m.%Y") if pd.notnull(d) else "-"
-    )
+    display_plan[f"Bestelldatum_M{m}"] = display_plan[f"Bestelldatum_M{m}"].apply(format_date_deadline)
 
 ui_columns = [
     "Artikelname", "MOQ", "Lead_Time_Weeks", 
@@ -167,7 +204,6 @@ st.divider()
 st.header("3. Material-Bestelllisten (MRP)")
 st.write("Berechnet auf Basis des Produktionsplans, abzgl. aktuellem Materialbestand. Gruppiert nach Lieferant.")
 
-# Caching-Funktionen für die Stücklisten und Materialbestände (spart BQ-Kosten bei Texteingaben)
 @st.cache_data
 def get_cogs_data(articles):
     return fetch_bom_for_articles(articles)
@@ -183,24 +219,85 @@ with st.spinner("Berechne Materialbedarf und prüfe Lagerbestände..."):
         unique_materials = df_cogs["materialArticleNumber"].dropna().unique().tolist()
         df_mat_stock = get_material_stock(unique_materials)
         
-        material_orders = calculate_material_requirements(production_plan, df_cogs, df_mat_stock)
+        material_orders, material_details = calculate_material_requirements(production_plan, df_cogs, df_mat_stock)
         
+        # --- A. BESTELLLISTEN FÜR DIE LIEFERANTEN ---
         if not material_orders.empty:
             display_orders = material_orders.copy()
-            display_orders["Spätestes_Bestelldatum"] = display_orders["Spätestes_Bestelldatum"].apply(lambda d: d.strftime("%d.%m.%Y") if pd.notnull(d) else "-")
-            display_orders["Für_Produktion_Am"] = display_orders["Für_Produktion_Am"].apply(lambda d: d.strftime("%d.%m.%Y") if pd.notnull(d) else "-")
-            
+            # Hier nutzen wir jetzt auch unsere smarte Datums-Funktion!
+            display_orders["Spätestes_Bestelldatum"] = display_orders["Spätestes_Bestelldatum"].apply(format_date_deadline)
+            display_orders["Für_Produktion_Am"] = display_orders["Für_Produktion_Am"].apply(format_date_deadline)
+
+            # Spalten schöner benennen
+            display_orders = display_orders.rename(columns={
+                "Einzelpreis": "Einzelpreis (€)",
+                "Gesamtpreis": "Gesamtpreis (€)"
+            })
+
             suppliers = sorted(display_orders["Lieferant"].dropna().unique())
             
             if suppliers:
                 tabs = st.tabs([str(s) for s in suppliers])
+                
+                spalten_reihenfolge = [
+                    "Material_Nr", 
+                    "Material_Name", 
+                    "Bestellmenge", 
+                    "Einheit", 
+                    "Einzelpreis (€)",
+                    "Gesamtpreis (€)",
+                    "Vorlaufzeit_Tage",
+                    "Spätestes_Bestelldatum", 
+                    "Für_Produktion_Am", 
+                    "Benötigt_Für_Produkt"
+                ]
+                
                 for idx, supplier_name in enumerate(suppliers):
                     with tabs[idx]:
-                        sup_df = display_orders[display_orders["Lieferant"] == supplier_name].drop(columns=["Lieferant"])
-                        st.dataframe(sup_df, hide_index=True, width='stretch')
+                        sup_df = display_orders[display_orders["Lieferant"] == supplier_name]
+                        
+                        # --- NEU: ZUSAMMENFASSUNG PRO BESTELLDATUM ---
+                        st.subheader("💰 Bestellvolumen")
+                        # Wir gruppieren über den formatierten Datums-String
+                        summary = sup_df.groupby("Spätestes_Bestelldatum")["Gesamtpreis (€)"].sum().reset_index()
+                        
+                        # Erstellt für jedes Bestelldatum eine schöne "Metric"-Kachel nebeneinander
+                        cols = st.columns(len(summary))
+                        for i, r in summary.iterrows():
+                            # Trennt das echte Datum vom Warn-String für ein sauberes Layout
+                            datum = r['Spätestes_Bestelldatum']
+                            kosten = f"{r['Gesamtpreis (€)']:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+                            cols[i].metric(label=f"Order am: {datum}", value=kosten)
+                            
+                        st.write("---")
+                        # ---------------------------------------------
+                        
+                        # Die eigentliche Tabelle anzeigen
+                        st.dataframe(sup_df[spalten_reihenfolge], hide_index=True, width='stretch')
             else:
                 st.info("Alle Lieferanten-Felder sind leer.")
         else:
             st.success("Aktuell ausreichender Materialbestand für den geplanten Produktionszeitraum! Keine Bestellungen notwendig.")
+            
+        # --- B. DETAILLIERTE STÜCKLISTEN-AUFLÖSUNG ---
+        if not material_details.empty:
+            st.write("---")
+            st.subheader("📋 Detaillierte Materialverwendung pro Produkt")
+            st.write("Diese Übersicht zeigt, wie der aktuelle Lagerbestand auf die geplanten Produktionen aufgeteilt wird.")
+            
+            # Datum schick formatieren
+            material_details["Produktion_Am"] = material_details["Produktion_Am"].apply(format_date_deadline)
+            
+            # NEU: Gruppierung in ausklappbare Menüs (Expanders) pro Produkt
+            unique_products = sorted(material_details["Produkt"].unique())
+            
+            for product in unique_products:
+                # Wir filtern die Tabelle für das jeweilige Produkt
+                prod_df = material_details[material_details["Produkt"] == product]
+                
+                with st.expander(f"📦 Materialbedarf für: {product}"):
+                    # Wir blenden die Spalte "Produkt" aus, da sie im Titel des Expanders steht
+                    st.dataframe(prod_df.drop(columns=["Produkt"]), hide_index=True, width='stretch')
+
     else:
         st.warning("Keine Stücklisten (COGS) für die ausgewählten Produkte gefunden.")
