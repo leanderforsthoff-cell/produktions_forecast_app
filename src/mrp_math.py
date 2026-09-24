@@ -61,11 +61,12 @@ def calculate_material_requirements(production_plan, df_cogs, df_mat_stock):
     df_demands["Material_Nr"] = df_demands["materialArticleNumber"]
     df_demands["Material_Name"] = df_demands["materialName"]
     df_demands["Einheit"] = df_demands["unitName"]
-    df_demands["Lead_Time_Days"] = df_demands["procurementLeadDays"]
-    if "articleunitprice" in df_demands.columns:
-        df_demands["Einzelpreis"] = df_demands["articleunitprice"].fillna(0.0).astype(float)
-    else:
-        df_demands["Einzelpreis"] = 0.0
+    df_demands["Vorlaufzeit_Tage"] = df_demands["procurementLeadDays"].fillna(0).astype(int)
+    df_demands["Einzelpreis"] = (
+        df_demands["articleunitprice"].fillna(0.0).astype(float)
+        if "articleunitprice" in df_demands.columns
+        else 0.0
+    )
 
     # Chronologisch sortieren (entscheidend für geteilte Rohstoffe)
     df_demands = df_demands.sort_values(by="Bedarfs_Datum", kind="stable").reset_index(drop=True)
@@ -103,21 +104,16 @@ def calculate_material_requirements(production_plan, df_cogs, df_mat_stock):
         return pd.DataFrame(), df_details
 
     df_orders_raw = df_demands[has_order].copy()
-    raw_net = net_bedarf[has_order]
-    df_orders_raw["Bestellmenge"] = raw_net.round(2)
-
-    safe_lead_times = df_orders_raw["Lead_Time_Days"].fillna(0).astype(int)
-    safe_prices = df_orders_raw["Einzelpreis"].fillna(0.0).astype(float)
-    df_orders_raw["Vorlaufzeit_Tage"] = safe_lead_times
-    df_orders_raw["Einzelpreis"] = safe_prices
-    df_orders_raw["Gesamtpreis"] = (raw_net * safe_prices).round(2)
+    raw_net = net_bedarf[has_order].round(2)
+    df_orders_raw["Bestellmenge"] = raw_net
+    df_orders_raw["Gesamtpreis"] = (raw_net * df_orders_raw["Einzelpreis"]).round(2)
+    df_orders_raw["Für_Produktion_Am"] = df_orders_raw["Bedarfs_Datum"]
+    df_orders_raw["Benötigt_Für_Produkt"] = df_orders_raw["Produkt"]
 
     df_orders_raw["Spätestes_Bestelldatum"] = [
         calculate_order_deadline(d, lt, unit='days')
-        for d, lt in zip(df_orders_raw["Bedarfs_Datum"], safe_lead_times)
+        for d, lt in zip(df_orders_raw["Bedarfs_Datum"], df_orders_raw["Vorlaufzeit_Tage"])
     ]
-    df_orders_raw["Für_Produktion_Am"] = df_orders_raw["Bedarfs_Datum"]
-    df_orders_raw["Benötigt_Für_Produkt"] = df_orders_raw["Produkt"]
 
     # Gruppieren der Bestellungen für die Lieferanten
     df_orders = df_orders_raw.groupby(

@@ -34,10 +34,7 @@ def fetch_available_articles():
         ORDER BY 
             Artikelname
     """
-    df = client.query(query).to_dataframe()
-    # Formatieren als "Name (Nummer)" für das Dropdown
-    df["Anzeige_Name"] = df["Artikelname"] + " (" + df["Artikelnummer"] + ")"
-    return df
+    return client.query(query).to_dataframe()
 
 @st.cache_data(ttl=600, show_spinner="Lade aktuellen Lagerbestand...")
 def fetch_current_inventory(article_list):

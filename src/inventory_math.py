@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from src.utils import calculate_order_deadline
+import datetime
 
 def calculate_production_needs(df_plan, target_months, constraints_dict=None):
     """
@@ -21,22 +22,10 @@ def calculate_production_needs(df_plan, target_months, constraints_dict=None):
     res_df["Artikelname"] = df_plan["Artikelname"].values
 
     # Mapping der Constraints mit robusten Fallbacks
-    def get_constraint(art, key, default):
-        entry = constraints_dict.get(art)
-        if isinstance(entry, dict):
-            val = entry.get(key)
-            if pd.notnull(val):
-                return val
-        return default
-
-    res_df["MOQ"] = [get_constraint(art, "MOQ", 1000) for art in res_df["Artikelnummer"]]
-    res_df["MOQ"] = res_df["MOQ"].replace(0, 1000).fillna(1000).astype(int)
-
-    res_df["Safety_Stock"] = [get_constraint(art, "Mindestbestand", 0) for art in res_df["Artikelnummer"]]
-    res_df["Safety_Stock"] = res_df["Safety_Stock"].fillna(0).astype(int)
-
-    res_df["Lead_Time_Weeks"] = [get_constraint(art, "Vorlaufzeit_Wochen", 4) for art in res_df["Artikelnummer"]]
-    res_df["Lead_Time_Weeks"] = res_df["Lead_Time_Weeks"].fillna(4).astype(int)
+    get_c = lambda a, key, default: (constraints_dict.get(a) if isinstance(constraints_dict.get(a), dict) else {}).get(key, default)
+    res_df["MOQ"] = res_df["Artikelnummer"].map(lambda a: get_c(a, "MOQ", 1000)).fillna(1000).replace(0, 1000).astype(int)
+    res_df["Safety_Stock"] = res_df["Artikelnummer"].map(lambda a: get_c(a, "Mindestbestand", 0)).fillna(0).astype(int)
+    res_df["Lead_Time_Weeks"] = res_df["Artikelnummer"].map(lambda a: get_c(a, "Vorlaufzeit_Wochen", 4)).fillna(4).astype(int)
 
     current_stock = df_plan["Aktueller_Bestand"].fillna(0).astype(float).values.copy()
     safety_stock = res_df["Safety_Stock"].values
@@ -56,17 +45,24 @@ def calculate_production_needs(df_plan, target_months, constraints_dict=None):
         else:
             demand = np.zeros(len(df_plan))
 
-        required = np.maximum(0, demand + safety_stock - current_stock)
-
-        # Aufrunden auf ganzzahliges Vielfaches von MOQ
-        prod = np.where(required > 0, np.ceil(required / moq) * moq, 0).astype(int)
-
-        # Fortschreibung des Bestands für Folgemonate
-        current_stock = current_stock + prod - demand
-
-        # Vektorisierte Zuweisung des Bestelldatums
+        # 1. Bestelldatum vorab berechnen
         lead_to_deadline = {lt: calculate_order_deadline(target_date, lt, unit='weeks') for lt in unique_leads}
         deadlines = lead_time_weeks.map(lead_to_deadline).values
+
+        # 2. Prüfen, ob die Deadline bereits in der Vergangenheit liegt (Gefrorene Periode)
+        today = datetime.date.today()
+        is_frozen = np.array([d is not None and d < today for d in deadlines])
+
+        # Fehlbestand erfassen
+        shortage = np.where(is_frozen & (demand > current_stock), demand - current_stock, 0).astype(int)
+        res_df[f"Fehlbestand_M{i}"] = shortage
+
+        # 3. Bedarf berechnen: Produktion nur auslösen, wenn NICHT gefroren
+        required = np.maximum(0, demand + safety_stock - current_stock)
+        prod = np.where((required > 0) & (~is_frozen), np.ceil(required / moq) * moq, 0).astype(int)
+
+        # 4. Bestandsfortschreibung mit Lost Sales (Bestand kann nicht unter 0 fallen)
+        current_stock = np.maximum(0.0, current_stock + prod - demand)
 
         res_df[prod_col] = prod
         res_df[order_col] = np.where(prod > 0, deadlines, None)

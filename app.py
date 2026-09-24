@@ -3,6 +3,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 import datetime
 import pandas as pd
+import numpy as np
 import streamlit as st
 
 from src.data_integration import (
@@ -52,23 +53,14 @@ TARGET_ARTICLES = [
     "10028-C", "10029-C", "10030-C", "10031-C", "10020-C"
 ]
 
-# 1. Dictionaries für blitzschnelles Mapping aufbauen
-# Name -> Nummer (für die Auswertung der Auswahl)
-name_to_num = dict(zip(df_articles["Anzeige_Name"], df_articles["Artikelnummer"]))
-# Nummer -> Name (für das Setzen der Default-Auswahl)
-num_to_name = dict(zip(df_articles["Artikelnummer"], df_articles["Anzeige_Name"]))
+art_names = dict(zip(df_articles["Artikelnummer"], df_articles["Artikelname"]))
 
-# 2. Default-Selektion extrem schnell ermitteln
-default_selection = [num_to_name[nr] for nr in TARGET_ARTICLES if nr in num_to_name]
-
-selected_display_names = st.sidebar.multiselect(
+selected_article_numbers = st.sidebar.multiselect(
     "Getränke für dieses Meeting:",
-    options=list(name_to_num.keys()),
-    default=default_selection 
+    options=df_articles["Artikelnummer"].tolist(),
+    default=[nr for nr in TARGET_ARTICLES if nr in art_names],
+    format_func=lambda nr: f"{art_names.get(nr, nr)} ({nr})"
 )
-
-# 3. Direkter Dictionary-Zugriff statt DataFrame-Filtering
-selected_article_numbers = [name_to_num[name] for name in selected_display_names]
 
 if not selected_article_numbers:
     st.warning("👈 Bitte wähle links in der Seitenleiste mindestens einen Artikel aus, um mit der Planung zu beginnen.")
@@ -85,17 +77,13 @@ st.sidebar.header("📐 3. Parameter (MOQ & Puffer)")
 st.sidebar.write("Bestimme die Nebenbedingungen für die ausgewählten Produkte.")
 
 # Standard-Werte für das Sidebar-UI aufbauen
-default_constraints = []
-for name, nr in zip(selected_display_names, selected_article_numbers):
-    default_constraints.append({
-        "Artikelnummer": nr,
-        "Name": name.split(' (')[0], # Sauberer Name fürs UI
-        "MOQ": 2000,
-        "Mindestbestand": 100,
-        "Vorlaufzeit_Wochen": 4
-    })
-
-df_constraints_raw = pd.DataFrame(default_constraints)
+df_constraints_raw = pd.DataFrame({
+    "Artikelnummer": selected_article_numbers,
+    "Name": [art_names.get(nr, nr) for nr in selected_article_numbers],
+    "MOQ": 2000,
+    "Mindestbestand": 100,
+    "Vorlaufzeit_Wochen": 4
+})
 
 # Der interaktive Editor in der Seitenleiste
 edited_constraints_df = st.sidebar.data_editor(
@@ -167,14 +155,45 @@ st.divider()
 st.header("2. Produktionsbedarf & Bestelltermine")
 st.write("Bestelltermine basieren auf einer Bestellung zum 15. des Monats minus X Wochen Vorlaufzeit.")
 
-# HIER ÜBERGEBEN WIR DAS NEUE CONSTRAINTS-DICTIONARY!
+# Produktionsplan berechnen
 production_plan = calculate_production_needs(edited_df, target_month_dates, constraints_dict)
-# UI Aufbereitung der Produktionsdaten
+
+# --- A. WARNHINWEISE FÜR DROHENDE FEHLBESTÄNDE ---
+out_of_stock_warnings = []
+for m_idx, m_label in enumerate(month_labels, start=1):
+    shortage_col = f"Fehlbestand_M{m_idx}"
+    if shortage_col in production_plan.columns:
+        affected = production_plan[production_plan[shortage_col] > 0]
+        for _, row in affected.iterrows():
+            fehlmenge = f"{row[shortage_col]:,}".replace(",", ".")
+            out_of_stock_warnings.append(
+                f"**{row['Artikelname']}**: Drohende Fehlmenge von **{fehlmenge} Stück** im **{m_label}** "
+                f"(Bestelldeadline ist abgelaufen – Produktion nicht mehr rechtzeitig möglich!)."
+            )
+            
+if out_of_stock_warnings:
+    with st.container():
+        st.error("🚨 **Achtung: Drohende Fehlbestände (Out-of-Stock)!**")
+        for warnung in out_of_stock_warnings:
+            st.warning(warnung)
+
+# --- B. UI-AUFBEREITUNG DER TABELLE ---
 display_plan = production_plan.copy()
 for m in range(1, len(target_month_dates) + 1):
     order_col = f"Bestelldatum_M{m}"
+    shortage_col = f"Fehlbestand_M{m}"
+    prod_col = f"Produktion_M{m}"
+
     if order_col in display_plan.columns:
         display_plan[order_col] = display_plan[order_col].apply(format_date_deadline)
+
+    # Betroffene Produktionszellen visuell mit ⚠️ hervorheben
+    if shortage_col in display_plan.columns and prod_col in display_plan.columns:
+        display_plan[prod_col] = np.where(
+        display_plan[shortage_col] > 0,
+        display_plan[prod_col].astype(str) + " ⚠️",
+        display_plan[prod_col].astype(str)
+    )
 
 ui_columns = ["Artikelname", "MOQ", "Lead_Time_Weeks"]
 rename_map = {"Lead_Time_Weeks": "Vorlauf (Wochen)"}
@@ -251,23 +270,28 @@ with st.spinner("Berechne Materialbedarf und prüfe Lagerbestände..."):
                     with tabs[idx]:
                         sup_df = display_orders[display_orders["Lieferant"] == supplier_name]
                         
-                        # --- ANGEPASST: ZUSAMMENFASSUNG PRO PRODUKTIONSMONAT ---
+                        # --- ZUSAMMENFASSUNG: CARD-GRID PRO PRODUKTIONSTERMIN MIT BORDER ---
                         st.subheader("💰 Bestellvolumen")
                         
-                        # HIER IST DIE ÄNDERUNG: Gruppierung über 'Für_Produktion_Am'
-                        summary = sup_df.groupby("Für_Produktion_Am")["Gesamtpreis (€)"].sum().reset_index()
+                        summary = sup_df.groupby("Für_Produktion_Am")["Gesamtpreis (€)"].agg(["sum", "count"]).reset_index()
                         
-                        # Erstellt für jedes Produktionsdatum eine schöne "Metric"-Kachel nebeneinander
                         cols = st.columns(len(summary))
-                        for i, r in summary.iterrows():
-                            datum = r['Für_Produktion_Am']
-                            kosten = f"{r['Gesamtpreis (€)']:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+                        for s_idx, r in summary.iterrows():
+                            datum = r["Für_Produktion_Am"]
+                            kosten = f"{r['sum']:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+                            anzahl = int(r["count"])
                             
-                            # Label in der Kachel angepasst
-                            cols[i].metric(label=f"Für Produktion am: {datum}", value=kosten)
-                            
+                            with cols[s_idx]:
+                                with st.container(border=True):
+                                    st.metric(
+                                        label=f"Produktion: {datum}",
+                                        value=kosten,
+                                        delta=f"{anzahl} Position{'en' if anzahl != 1 else ''}",
+                                        delta_color="off"
+                                    )
+                                    
                         st.write("---")
-                        # ---------------------------------------------
+                        # ----------------------------------------------------------------------
                         
                         # Die eigentliche Tabelle anzeigen
                         st.dataframe(sup_df[spalten_reihenfolge], hide_index=True, width='stretch')
