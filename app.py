@@ -16,22 +16,13 @@ from src.data_integration import (
 from src.forecasting import generate_system_forecast
 from src.inventory_math import calculate_production_needs
 from src.mrp_math import calculate_material_requirements
+from src.utils import get_target_months
 
 # ==========================================
 # 0. SEITEN-KONFIGURATION & GLOBALE FUNKTIONEN
 # ==========================================
 st.set_page_config(page_title="Produktions-Forecast", layout="wide")
 st.title("📦 Produktions-Forecast & Planung")
-
-def get_target_months():
-    """Berechnet den 1. der nächsten 3 Monate."""
-    heute = datetime.date.today()
-    m1 = (heute.replace(day=1) + datetime.timedelta(days=32)).replace(day=1)
-    m2 = (m1 + datetime.timedelta(days=32)).replace(day=1)
-    m3 = (m2 + datetime.timedelta(days=32)).replace(day=1)
-    return [m1, m2, m3]
-
-target_month_dates = get_target_months()
 
 def format_date_deadline(d):
     """
@@ -48,20 +39,12 @@ def format_date_deadline(d):
     
     return d.strftime("%d.%m.%Y")
 
-# UI-Labels für die Monate (z.B. "Okt 2026")
 monate_de = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
-m1_label = f"{monate_de[target_month_dates[0].month - 1]} {target_month_dates[0].year}"
-m2_label = f"{monate_de[target_month_dates[1].month - 1]} {target_month_dates[1].year}"
-m3_label = f"{monate_de[target_month_dates[2].month - 1]} {target_month_dates[2].year}"
 
 # ==========================================
 # 1. SIDEBAR (ARTIKEL & CONSTRAINTS)
 # ==========================================
-@st.cache_data
-def load_article_master():
-    return fetch_available_articles()
-
-df_articles = load_article_master()
+df_articles = fetch_available_articles()
 
 st.sidebar.header("⚙️ 1. Artikelauswahl")
 TARGET_ARTICLES = [
@@ -92,7 +75,13 @@ if not selected_article_numbers:
     st.stop()
 
 st.sidebar.divider()
-st.sidebar.header("📐 2. Parameter (MOQ & Puffer)")
+st.sidebar.header("⏱️ 2. Planungshorizont")
+horizon_months = st.sidebar.slider("Monate in die Zukunft:", min_value=1, max_value=6, value=3)
+target_month_dates = get_target_months(horizon_months=horizon_months)
+month_labels = [f"{monate_de[d.month - 1]} {d.year}" for d in target_month_dates]
+
+st.sidebar.divider()
+st.sidebar.header("📐 3. Parameter (MOQ & Puffer)")
 st.sidebar.write("Bestimme die Nebenbedingungen für die ausgewählten Produkte.")
 
 # Standard-Werte für das Sidebar-UI aufbauen
@@ -119,10 +108,15 @@ edited_constraints_df = st.sidebar.data_editor(
 # Umwandeln in ein Dictionary für unsere Mathematik-Funktionen
 constraints_dict = edited_constraints_df.set_index("Artikelnummer").to_dict(orient="index")
 
+st.sidebar.divider()
+if st.sidebar.button("🔄 Cache leeren & aktualisieren", help="Löscht den Zwischenspeicher und lädt Live-Daten aus BigQuery neu."):
+    st.cache_data.clear()
+    st.session_state.clear()
+    st.rerun()
+
 # ==========================================
 # 2. DATEN LADEN & FORECAST EDITOR
 # ==========================================
-@st.cache_data
 def load_and_prepare_data(target_months, article_list):
     inventory = fetch_current_inventory(article_list)
     history = fetch_historical_sales(article_list)
@@ -131,14 +125,20 @@ def load_and_prepare_data(target_months, article_list):
     df_merged = pd.merge(inventory, forecast, on="Artikelnummer", how="left")
     
     # Manuelle Spalten initialisieren
-    for m in [1, 2, 3]:
+    for m in range(1, len(target_months) + 1):
         df_merged[f"Manuell_M{m}"] = df_merged[f"System_M{m}"].fillna(0).astype(int)
     return df_merged
 
 # State-Management für die Tabelle
-if "last_selection" not in st.session_state or st.session_state.last_selection != selected_article_numbers:
+if (
+    "last_selection" not in st.session_state 
+    or st.session_state.last_selection != selected_article_numbers
+    or "last_horizon" not in st.session_state
+    or st.session_state.last_horizon != horizon_months
+):
     st.session_state.plan_data = load_and_prepare_data(target_month_dates, selected_article_numbers)
     st.session_state.last_selection = selected_article_numbers
+    st.session_state.last_horizon = horizon_months
 
 st.header("1. Erwarteter Abverkauf (Forecast anpassen)")
 st.write("Das System schlägt Werte vor. Bitte passe die 'Manuell'-Spalten an.")
@@ -147,20 +147,17 @@ column_config = {
     "Artikelnummer": st.column_config.TextColumn(disabled=True),
     "Artikelname": st.column_config.TextColumn(disabled=True),
     "Aktueller_Bestand": st.column_config.NumberColumn(disabled=True),
-    "System_M1": st.column_config.NumberColumn(f"Vorschlag {m1_label}", disabled=True),
-    "System_M2": st.column_config.NumberColumn(f"Vorschlag {m2_label}", disabled=True),
-    "System_M3": st.column_config.NumberColumn(f"Vorschlag {m3_label}", disabled=True),
-    "Manuell_M1": st.column_config.NumberColumn(f"Eingabe {m1_label} ✏️", step=100),
-    "Manuell_M2": st.column_config.NumberColumn(f"Eingabe {m2_label} ✏️", step=100),
-    "Manuell_M3": st.column_config.NumberColumn(f"Eingabe {m3_label} ✏️", step=100),
 }
+for m_idx, m_label in enumerate(month_labels, start=1):
+    column_config[f"System_M{m_idx}"] = st.column_config.NumberColumn(f"Vorschlag {m_label}", disabled=True)
+    column_config[f"Manuell_M{m_idx}"] = st.column_config.NumberColumn(f"Eingabe {m_label} ✏️", step=100)
 
 edited_df = st.data_editor(
     st.session_state.plan_data,
     column_config=column_config,
     hide_index=True,
     width='stretch',
-    key="data_editor"
+    key=f"data_editor_{horizon_months}"
 )
 
 # ==========================================
@@ -174,24 +171,21 @@ st.write("Bestelltermine basieren auf einer Bestellung zum 15. des Monats minus 
 production_plan = calculate_production_needs(edited_df, target_month_dates, constraints_dict)
 # UI Aufbereitung der Produktionsdaten
 display_plan = production_plan.copy()
-for m in [1, 2, 3]:
-    display_plan[f"Bestelldatum_M{m}"] = display_plan[f"Bestelldatum_M{m}"].apply(format_date_deadline)
+for m in range(1, len(target_month_dates) + 1):
+    order_col = f"Bestelldatum_M{m}"
+    if order_col in display_plan.columns:
+        display_plan[order_col] = display_plan[order_col].apply(format_date_deadline)
 
-ui_columns = [
-    "Artikelname", "MOQ", "Lead_Time_Weeks", 
-    "Produktion_M1", "Bestelldatum_M1", 
-    "Produktion_M2", "Bestelldatum_M2", 
-    "Produktion_M3", "Bestelldatum_M3"
-]
+ui_columns = ["Artikelname", "MOQ", "Lead_Time_Weeks"]
+rename_map = {"Lead_Time_Weeks": "Vorlauf (Wochen)"}
 
-display_plan = display_plan[ui_columns].rename(
-    columns={
-        "Lead_Time_Weeks": "Vorlauf (Wochen)",
-        "Produktion_M1": f"Produktion {m1_label}", "Bestelldatum_M1": f"Order für {m1_label}",
-        "Produktion_M2": f"Produktion {m2_label}", "Bestelldatum_M2": f"Order für {m2_label}",
-        "Produktion_M3": f"Produktion {m3_label}", "Bestelldatum_M3": f"Order für {m3_label}"
-    }
-)
+for m_idx, m_label in enumerate(month_labels, start=1):
+    ui_columns.extend([f"Produktion_M{m_idx}", f"Bestelldatum_M{m_idx}"])
+    rename_map[f"Produktion_M{m_idx}"] = f"Produktion {m_label}"
+    rename_map[f"Bestelldatum_M{m_idx}"] = f"Order für {m_label}"
+
+valid_ui_cols = [c for c in ui_columns if c in display_plan.columns]
+display_plan = display_plan[valid_ui_cols].rename(columns=rename_map)
 
 st.dataframe(display_plan, hide_index=True, width='content')
 
@@ -213,20 +207,12 @@ st.divider()
 st.header("3. Material-Bestelllisten (MRP)")
 st.write("Berechnet auf Basis des Produktionsplans, abzgl. aktuellem Materialbestand. Gruppiert nach Lieferant.")
 
-@st.cache_data
-def get_cogs_data(articles):
-    return fetch_bom_for_articles(articles)
-
-@st.cache_data
-def get_material_stock(materials):
-    return fetch_material_stock(materials)
-
 with st.spinner("Berechne Materialbedarf und prüfe Lagerbestände..."):
-    df_cogs = get_cogs_data(selected_article_numbers)
+    df_cogs = fetch_bom_for_articles(selected_article_numbers)
     
     if not df_cogs.empty:
         unique_materials = df_cogs["materialArticleNumber"].dropna().unique().tolist()
-        df_mat_stock = get_material_stock(unique_materials)
+        df_mat_stock = fetch_material_stock(unique_materials)
         
         material_orders, material_details = calculate_material_requirements(production_plan, df_cogs, df_mat_stock)
         

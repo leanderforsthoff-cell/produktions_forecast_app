@@ -1,6 +1,18 @@
 import pandas as pd
 import datetime
 
+def get_target_months(horizon_months=3, start_date=None):
+    """Berechnet den 1. der nächsten N Monate."""
+    if start_date is None:
+        start_date = datetime.date.today()
+    
+    current = start_date.replace(day=1)
+    target_months = []
+    for _ in range(horizon_months):
+        current = (current + datetime.timedelta(days=32)).replace(day=1)
+        target_months.append(current)
+    return target_months
+
 def calculate_order_deadline(target_date, lead_time, unit='days'):
     """
     Berechnet das späteste Bestelldatum zum 15. des Monats.

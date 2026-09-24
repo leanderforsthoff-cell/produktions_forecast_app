@@ -1,14 +1,17 @@
 import pandas as pd
 
 def generate_system_forecast(inventory_df, history_df, target_months):
+    if not target_months:
+        return pd.DataFrame()
+
     # 1. Ziel-Daten einmalig parsen
-    m1_date = pd.to_datetime(target_months[0])
-    m2_date = pd.to_datetime(target_months[1])
-    m3_date = pd.to_datetime(target_months[2])
+    parsed_target_dates = [pd.to_datetime(m) for m in target_months]
+    m1_date = parsed_target_dates[0]
     max_date = m1_date - pd.DateOffset(months=1)
 
     # 2. Historie EINMALIG vorbereiten und als schnelles Dictionary/MultiIndex anlegen
     if not history_df.empty:
+        history_df = history_df.copy()
         history_df["Verkaufsmonat"] = pd.to_datetime(history_df["Verkaufsmonat"])
         # Wir summieren die Mengen pro Artikel und Monat und speichern sie direkt ab
         hist_grouped = history_df.groupby(["Artikelnummer", "Verkaufsmonat"])["Verkaufsmenge"].sum()
@@ -17,9 +20,9 @@ def generate_system_forecast(inventory_df, history_df, target_months):
 
     forecast_data = []
 
-    # 3. Iteration über Bestand (jetzt viel schneller, da nur noch O(1) Lookups passieren)
+    # 3. Iteration über Bestand
     for artikel_nr in inventory_df["Artikelnummer"]:
-        m1, m2, m3 = 0, 0, 0
+        month_vals = {f"System_M{i}": 0 for i in range(1, len(parsed_target_dates) + 1)}
         
         # Prüfen, ob der Artikel überhaupt in der Historie existiert
         if not hist_grouped.empty and artikel_nr in hist_grouped.index.get_level_values(0):
@@ -40,15 +43,11 @@ def generate_system_forecast(inventory_df, history_df, target_months):
                     return int((val_last_year * 0.6) + (avg_3m * 0.4))
                 return avg_3m
 
-            m1 = calc_month(m1_date)
-            m2 = calc_month(m2_date)
-            m3 = calc_month(m3_date)
+            for i, target_date in enumerate(parsed_target_dates, start=1):
+                month_vals[f"System_M{i}"] = calc_month(target_date)
 
-        forecast_data.append({
-            "Artikelnummer": artikel_nr,
-            "System_M1": m1,
-            "System_M2": m2,
-            "System_M3": m3
-        })
+        record = {"Artikelnummer": artikel_nr}
+        record.update(month_vals)
+        forecast_data.append(record)
         
     return pd.DataFrame(forecast_data)
