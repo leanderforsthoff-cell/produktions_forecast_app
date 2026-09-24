@@ -34,7 +34,7 @@ def calculate_material_requirements(production_plan, df_cogs, df_mat_stock):
                         "Lead_Time_Days": bom_row["procurementLeadDays"],
                         "Bedarfs_Datum": prod_order_date,
                         "Brutto_Bedarf": req_qty,
-                        "Einzelpreis": bom_row["articleunitprice"]
+                        "Einzelpreis": bom_row.get("articleunitprice", 0.0)
                     })
     
     df_demands = pd.DataFrame(demands)

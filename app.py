@@ -265,18 +265,20 @@ with st.spinner("Berechne Materialbedarf und prüfe Lagerbestände..."):
                     with tabs[idx]:
                         sup_df = display_orders[display_orders["Lieferant"] == supplier_name]
                         
-                        # --- NEU: ZUSAMMENFASSUNG PRO BESTELLDATUM ---
+                        # --- ANGEPASST: ZUSAMMENFASSUNG PRO PRODUKTIONSMONAT ---
                         st.subheader("💰 Bestellvolumen")
-                        # Wir gruppieren über den formatierten Datums-String
-                        summary = sup_df.groupby("Spätestes_Bestelldatum")["Gesamtpreis (€)"].sum().reset_index()
                         
-                        # Erstellt für jedes Bestelldatum eine schöne "Metric"-Kachel nebeneinander
+                        # HIER IST DIE ÄNDERUNG: Gruppierung über 'Für_Produktion_Am'
+                        summary = sup_df.groupby("Für_Produktion_Am")["Gesamtpreis (€)"].sum().reset_index()
+                        
+                        # Erstellt für jedes Produktionsdatum eine schöne "Metric"-Kachel nebeneinander
                         cols = st.columns(len(summary))
                         for i, r in summary.iterrows():
-                            # Trennt das echte Datum vom Warn-String für ein sauberes Layout
-                            datum = r['Spätestes_Bestelldatum']
+                            datum = r['Für_Produktion_Am']
                             kosten = f"{r['Gesamtpreis (€)']:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
-                            cols[i].metric(label=f"Order am: {datum}", value=kosten)
+                            
+                            # Label in der Kachel angepasst
+                            cols[i].metric(label=f"Für Produktion am: {datum}", value=kosten)
                             
                         st.write("---")
                         # ---------------------------------------------

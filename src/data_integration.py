@@ -25,7 +25,6 @@ def fetch_available_articles():
         WHERE 
             stock.article_number IS NOT NULL
             AND art.active = TRUE
-            AND art.productionArticle = TRUE
         ORDER BY 
             Artikelname
     """
