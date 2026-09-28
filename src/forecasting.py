@@ -1,7 +1,17 @@
 import pandas as pd
 
 def generate_system_forecast(inventory_df, history_df, target_months):
-    if not target_months:
+    """
+    Erstellt eine Vorhersage zum Absatz des übergebenen inventory_df für die Monate target_months.
+    Auf Basis der Verkaufsdaten aus history_df.
+    Gibt einen Dataframe mit Vorhersagedaten zurück.
+    """
+    if (
+        not target_months 
+        or inventory_df is None 
+        or inventory_df.empty 
+        or "Artikelnummer" not in inventory_df.columns
+    ):
         return pd.DataFrame()
 
     # 1. Ziel-Daten einmalig parsen
@@ -15,8 +25,10 @@ def generate_system_forecast(inventory_df, history_df, target_months):
         history_df["Verkaufsmonat"] = pd.to_datetime(history_df["Verkaufsmonat"])
         # Wir summieren die Mengen pro Artikel und Monat und speichern sie direkt ab
         hist_grouped = history_df.groupby(["Artikelnummer", "Verkaufsmonat"])["Verkaufsmenge"].sum()
+        history_articles = set(hist_grouped.index.get_level_values(0))
     else:
         hist_grouped = pd.Series(dtype=float)
+        history_articles = set()
 
     forecast_data = []
 
@@ -25,7 +37,7 @@ def generate_system_forecast(inventory_df, history_df, target_months):
         month_vals = {f"System_M{i}": 0 for i in range(1, len(parsed_target_dates) + 1)}
         
         # Prüfen, ob der Artikel überhaupt in der Historie existiert
-        if not hist_grouped.empty and artikel_nr in hist_grouped.index.get_level_values(0):
+        if not hist_grouped.empty and artikel_nr in history_articles:
             art_series = hist_grouped[artikel_nr]
             min_date = art_series.index.min()
             

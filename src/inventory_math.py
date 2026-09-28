@@ -6,7 +6,6 @@ import datetime
 def calculate_production_needs(df_plan, target_months, constraints_dict=None):
     """
     Berechnet Produktionsmengen und Bestelldaten für einen dynamischen Planungshorizont.
-    Vollständig vektorisiert ohne row-wise iterrows().
     """
     if df_plan.empty or not target_months:
         cols = ["Artikelnummer", "Artikelname", "MOQ", "Safety_Stock", "Lead_Time_Weeks"]

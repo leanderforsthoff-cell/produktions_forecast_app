@@ -1,7 +1,6 @@
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-import datetime
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -18,30 +17,13 @@ from src.data_integration import (
 from src.forecasting import generate_system_forecast
 from src.inventory_math import calculate_production_needs
 from src.mrp_math import calculate_material_requirements, calculate_cash_needs
-from src.utils import get_target_months
+from src.utils import get_target_months, format_date_deadline, monate_de
 
 # ==========================================
 # 0. SEITEN-KONFIGURATION & GLOBALE FUNKTIONEN
 # ==========================================
 st.set_page_config(page_title="Produktions-Forecast", layout="wide")
 st.title("📦 Produktions-Forecast & Planung")
-
-def format_date_deadline(d):
-    """
-    Formatiert das Datum. Liegt es in der Vergangenheit, wird das heutige 
-    Datum als nächstmöglicher Aktionstag gesetzt und das alte Datum markiert.
-    """
-    if pd.isnull(d):
-        return "-"
-    
-    heute = datetime.date.today()
-    if d < heute:
-        # Ausgabe z.B.: "16.09.2026 🔴 (eig. 15.08.2026)"
-        return f"{heute.strftime('%d.%m.%Y')} 🔴 (eig. {d.strftime('%d.%m.%Y')})"
-    
-    return d.strftime("%d.%m.%Y")
-
-monate_de = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
 
 # ==========================================
 # STREAMLIT CACHING (DATA INTEGRATION LAYER)
@@ -193,12 +175,14 @@ for m_idx, m_label in enumerate(month_labels, start=1):
     shortage_col = f"Fehlbestand_M{m_idx}"
     if shortage_col in production_plan.columns:
         affected = production_plan[production_plan[shortage_col] > 0]
-        for _, row in affected.iterrows():
-            fehlmenge = f"{row[shortage_col]:,}".replace(",", ".")
-            out_of_stock_warnings.append(
-                f"**{row['Artikelname']}**: Drohende Fehlmenge von **{fehlmenge} Stück** im **{m_label}** "
-                f"(Bestelldeadline ist abgelaufen – Produktion nicht mehr rechtzeitig möglich!)."
-            )
+        if not affected.empty:
+            formatted_shortage = affected[shortage_col].apply(lambda val: f"{val:,}".replace(",", "."))
+            warnings = (
+                "**" + affected["Artikelname"] + "**: Drohende Fehlmenge von **"
+                + formatted_shortage + f" Stück** im **{m_label}** "
+                + "(Bestelldeadline ist abgelaufen – Produktion nicht mehr rechtzeitig möglich!)."
+            ).tolist()
+            out_of_stock_warnings.extend(warnings)
             
 if out_of_stock_warnings:
     with st.container():
@@ -305,19 +289,21 @@ with st.spinner("Berechne Materialbedarf und prüfe Lagerbestände..."):
                         st.subheader("💰 Bestellvolumen")
                         
                         summary = sup_df.groupby("Für_Produktion_Am")["Gesamtpreis (€)"].agg(["sum", "count"]).reset_index()
+                        summary["formatted_cost"] = summary["sum"].apply(
+                            lambda val: f"{val:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+                        )
+                        summary["delta_text"] = summary["count"].astype(int).apply(
+                            lambda cnt: f"{cnt} Position{'en' if cnt != 1 else ''}"
+                        )
                         
                         cols = st.columns(len(summary))
-                        for s_idx, r in summary.iterrows():
-                            datum = r["Für_Produktion_Am"]
-                            kosten = f"{r['sum']:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
-                            anzahl = int(r["count"])
-                            
+                        for s_idx, r in enumerate(summary.to_dict(orient="records")):
                             with cols[s_idx]:
                                 with st.container(border=True):
                                     st.metric(
-                                        label=f"Produktion: {datum}",
-                                        value=kosten,
-                                        delta=f"{anzahl} Position{'en' if anzahl != 1 else ''}",
+                                        label=f"Produktion: {r['Für_Produktion_Am']}",
+                                        value=r["formatted_cost"],
+                                        delta=r["delta_text"],
                                         delta_color="off"
                                     )
                                     

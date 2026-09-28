@@ -1,11 +1,11 @@
 import datetime
 import pandas as pd
 from google.cloud import bigquery
+from google.api_core.exceptions import NotFound
 from dotenv import load_dotenv
 
 # Lade die Umgebungsvariablen aus der .env Datei
 load_dotenv()
-
 
 def get_bq_client():
     """Initialisiert den BigQuery Client mit den Credentials aus der .env"""
@@ -145,8 +145,8 @@ def save_forecast_to_bq(edited_df, production_plan, target_months, client=None):
     """
     try:
         client.query(delete_query).result()
-    except Exception:
-        # Falls die Tabelle noch gar nicht existiert, wirft BQ einen Fehler.
+    except NotFound:
+        # Falls die Tabelle noch gar nicht existiert, ist das Löschen unnötig.
         pass
 
     # 2. Daten dynamisch ins Long-Format transformieren
@@ -249,7 +249,7 @@ def fetch_material_stock(material_numbers, client=None):
     """
     
     # Umwandeln in Integer-Liste für die Query
-    mat_ints = sorted([int(m) for m in material_numbers if pd.notnull(m)])
+    mat_ints = [int(m) for m in material_numbers if pd.notnull(m) and str(m).isdigit()]
     
     job_config = bigquery.QueryJobConfig(
         query_parameters=[bigquery.ArrayQueryParameter("mat_numbers", "INT64", mat_ints)]

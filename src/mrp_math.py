@@ -3,7 +3,6 @@ import numpy as np
 import pandas as pd
 from src.utils import calculate_order_deadline
 
-
 def calculate_material_requirements(production_plan, df_cogs, df_mat_stock):
     """
     Vektorisierte Berechnung des Materialbedarfs (MRP).
