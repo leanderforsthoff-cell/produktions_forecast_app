@@ -1,3 +1,5 @@
+"""Streamlit-Webanwendung für Produktions-Forecasting, Produktionsplanung und Material Requirements Planning (MRP)."""
+
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -30,27 +32,32 @@ st.title("📦 Produktions-Forecast & Planung")
 # ==========================================
 @st.cache_resource
 def get_bq_client():
-    """Hält den BigQuery-Client für die Streamlit-Session gecacht."""
+    """Hält den initialisierten BigQuery-Client als Streamlit-Ressource im Cache."""
     return _get_bq_client()
 
 @st.cache_data(ttl=3600, show_spinner="Lade Artikelstammdaten aus BigQuery...")
 def fetch_available_articles():
+    """Lädt verfügbare Fertigwarenartikel aus BigQuery (1 Stunde gecacht)."""
     return _fetch_available_articles(client=get_bq_client())
 
 @st.cache_data(ttl=600, show_spinner="Lade aktuellen Lagerbestand...")
 def fetch_current_inventory(article_list):
+    """Lädt den aktuellen Fertigwarenbestand für die gewählten Artikel (10 Minuten gecacht)."""
     return _fetch_current_inventory(article_list, client=get_bq_client())
 
 @st.cache_data(ttl=1800, show_spinner="Lade historische Verkaufsdaten...")
 def fetch_historical_sales(article_list):
+    """Lädt monatliche Verkaufsdaten der letzten 36 Monate (30 Minuten gecacht)."""
     return _fetch_historical_sales(article_list, client=get_bq_client())
 
 @st.cache_data(ttl=3600, show_spinner="Lade Stücklisten (COGS)...")
 def fetch_bom_for_articles(article_list):
+    """Lädt Stücklisten und Lieferanteninformationen für die Artikel (1 Stunde gecacht)."""
     return _fetch_bom_for_articles(article_list, client=get_bq_client())
 
 @st.cache_data(ttl=600, show_spinner="Lade Materialbestände...")
 def fetch_material_stock(material_numbers):
+    """Lädt Rohstoff-Lagerbestände für die Stücklisten-Komponenten (10 Minuten gecacht)."""
     return _fetch_material_stock(material_numbers, client=get_bq_client())
 
 # ==========================================
@@ -117,6 +124,16 @@ if st.sidebar.button("🔄 Cache leeren & aktualisieren", help="Löscht den Zwis
 # 2. DATEN LADEN & FORECAST EDITOR
 # ==========================================
 def load_and_prepare_data(target_months, article_list):
+    """
+    Lädt Bestände sowie Historie und kombiniert sie mit dem System-Forecast zur initialen Planungsmatrix.
+
+    Args:
+        target_months (list): Geplante Zielmonate.
+        article_list (list[str]): Ausgewählte Fertigprodukt-Artikelnummern.
+
+    Returns:
+        pd.DataFrame: Planungsmatrix mit Ist-Bestand, Systemprognose und initialen manuellen Werten.
+    """
     inventory = fetch_current_inventory(article_list)
     history = fetch_historical_sales(article_list)
     

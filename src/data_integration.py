@@ -1,3 +1,5 @@
+"""BigQuery-Datenintegration für Stammdaten, Bestände, Absätze, Stücklisten und Snapshots."""
+
 import datetime
 import pandas as pd
 from google.cloud import bigquery
@@ -8,12 +10,25 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def get_bq_client():
-    """Initialisiert den BigQuery Client mit den Credentials aus der .env"""
+    """
+    Initialisiert und liefert einen Google Cloud BigQuery-Client unter Verwendung der Umgebungsvariablen.
+
+    Returns:
+        bigquery.Client: Autorisierter BigQuery-Client.
+    """
     return bigquery.Client()
 
 
 def fetch_available_articles(client=None):
-    """Holt eine Liste aller relevanten Artikel (Nummer und Name) für das UI-Dropdown."""
+    """
+    Lädt aktive Fertigwarenartikel (Nummer und Bezeichnung) aus BigQuery für die Artikelauswahl.
+
+    Args:
+        client (bigquery.Client, optional): Aktiver BigQuery-Client.
+
+    Returns:
+        pd.DataFrame: DataFrame mit Spalten 'Artikelnummer' und 'Artikelname'.
+    """
     if client is None:
         client = get_bq_client()
 
@@ -37,7 +52,16 @@ def fetch_available_articles(client=None):
 
 
 def fetch_current_inventory(article_list, client=None):
-    """Holt den aggregierten Bestand inkl. Artikelnamen aus BigQuery."""
+    """
+    Lädt den aktuellen Lagerbestand der angegebenen Artikel aus BigQuery.
+
+    Args:
+        article_list (list[str]): Liste der abzufragenden Artikelnummern.
+        client (bigquery.Client, optional): Aktiver BigQuery-Client.
+
+    Returns:
+        pd.DataFrame: DataFrame mit 'Artikelnummer', 'Artikelname' und 'Aktueller_Bestand'.
+    """
     if not article_list:
         return pd.DataFrame(columns=["Artikelnummer", "Artikelname", "Aktueller_Bestand"])
 
@@ -77,7 +101,16 @@ def fetch_current_inventory(article_list, client=None):
 
 
 def fetch_historical_sales(article_list, client=None):
-    """Holt monatlich aggregierte Verkaufszahlen der letzten 36 Monate aus BigQuery."""
+    """
+    Lädt monatlich aggregierte Absatzdaten der letzten 36 Monate für die übergebenen Artikel aus BigQuery.
+
+    Args:
+        article_list (list[str]): Liste der abzufragenden Artikelnummern.
+        client (bigquery.Client, optional): Aktiver BigQuery-Client.
+
+    Returns:
+        pd.DataFrame: DataFrame mit 'Artikelnummer', 'Verkaufsmonat' (Monatserster) und 'Verkaufsmenge'.
+    """
     if not article_list:
         return pd.DataFrame(columns=["Artikelnummer", "Verkaufsmonat", "Verkaufsmenge"])
 
@@ -120,9 +153,16 @@ def fetch_historical_sales(article_list, client=None):
 
 def save_forecast_to_bq(edited_df, production_plan, target_months, client=None):
     """
-    Formatiert die Daten ins saubere Datenbank-Format (Long-Format) um, 
-    löscht eventuelle alte Speichervorgänge des gleichen Meetings und speichert dann.
-    Dynamisch für beliebige Planungshorizonte ohne iterrows.
+    Speichert den aktuellen Planungs- und Produktions-Snapshot idempotent in BigQuery.
+
+    Löscht vor dem Schreiben bestehende Einträge für den aktuellen Planungsmonat (Monatserster von heute),
+    überführt Forecast- und Produktionsdaten ins Long-Format und persistiert den Snapshot.
+
+    Args:
+        edited_df (pd.DataFrame): Manuell angepasste Forecast-Daten ('System_M{i}', 'Manuell_M{i}').
+        production_plan (pd.DataFrame): Berechnete Produktionsbedarfe und Bestelltermine.
+        target_months (list): Geplante Zielmonate.
+        client (bigquery.Client, optional): Aktiver BigQuery-Client.
     """
     if edited_df.empty or not target_months:
         return
@@ -189,7 +229,19 @@ def save_forecast_to_bq(edited_df, production_plan, target_months, client=None):
 
 
 def fetch_bom_for_articles(article_list, client=None):
-    """Holt die Stücklisten inkl. Lieferantendaten für die ausgewählten Artikel."""
+    """
+    Lädt Stücklisten (BOM) und Lieferantenkonditionen (COGS) für die angegebenen Artikel aus BigQuery.
+
+    Matcht Artikel anhand des Basis-Präfixes (ohne Suffixe wie '-C') auf zugehörige Rohstoff-
+    und Verpackungsmaterialien inklusive Vorlaufzeiten und Preisen.
+
+    Args:
+        article_list (list[str]): Liste der Fertigprodukt-Artikelnummern.
+        client (bigquery.Client, optional): Aktiver BigQuery-Client.
+
+    Returns:
+        pd.DataFrame: Stücklistenzeilen mit Komponenten, Bedarfsfaktor, Lieferant, Vorlaufzeit und Einzelpreis.
+    """
     if not article_list:
         return pd.DataFrame()
 
@@ -224,8 +276,16 @@ def fetch_bom_for_articles(article_list, client=None):
 
 def fetch_material_stock(material_numbers, client=None):
     """
-    Holt den Bestand der Rohstoffe aus warehousestock.
-    Schneidet eventuelle '-C' Suffixe ab und summiert die Mengen.
+    Lädt aggregierte Rohstoffbestände aus BigQuery für die angegebenen Materialnummern.
+
+    Normalisiert Artikelnummern durch Abschneiden von Suffixen (z. B. '-C') und summiert Mengen je Basismaterial.
+
+    Args:
+        material_numbers (list): Liste von Materialnummern (numerisch oder als String).
+        client (bigquery.Client, optional): Aktiver BigQuery-Client.
+
+    Returns:
+        pd.DataFrame: DataFrame mit 'materialArticleNumber' (int) und 'Aktueller_Materialbestand' (float).
     """
     if not material_numbers:
         return pd.DataFrame()

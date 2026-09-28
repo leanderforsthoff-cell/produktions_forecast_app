@@ -1,10 +1,21 @@
-import pandas as pd
+"""Hilfsfunktionen für Datumsberechnungen, Monatssequenzen und Fristformatierungen."""
+
 import datetime
+import pandas as pd
 
 monate_de = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
 
 def get_target_months(horizon_months=3, start_date=None):
-    """Berechnet den 1. der nächsten N Monate."""
+    """
+    Berechnet die Monatsersten der nächsten N Monate.
+
+    Args:
+        horizon_months (int): Anzahl der vorauszuplanenden Monate.
+        start_date (datetime.date, optional): Basisdatum. Standard ist heute.
+
+    Returns:
+        list[datetime.date]: Liste der Monatsersten im Planungshorizont.
+    """
     if start_date is None:
         start_date = datetime.date.today()
     
@@ -17,8 +28,19 @@ def get_target_months(horizon_months=3, start_date=None):
 
 def calculate_order_deadline(target_date, lead_time, unit='days'):
     """
-    Berechnet das späteste Bestelldatum zum 15. des Monats.
-    unit kann 'days' oder 'weeks' sein.
+    Berechnet das späteste Bestelldatum, gerundet auf den 15. des Monats.
+
+    Zieht die Vorlaufzeit vom Zieltermin ab und snappt auf den 15.:
+    Liegt der Stichtag am 15. oder später, wird der 15. des Monats gewählt,
+    andernfalls der 15. des Vormonats.
+
+    Args:
+        target_date (date-like): Geplanter Bedarfs- oder Produktionstermin.
+        lead_time (int | float): Vorlaufzeit.
+        unit (str): Einheit der Vorlaufzeit ('days' oder 'weeks').
+
+    Returns:
+        datetime.date | None: Ermitteltes Bestelldatum oder None bei fehlendem target_date.
     """
     if pd.isnull(target_date):
         return None
@@ -44,8 +66,17 @@ def calculate_order_deadline(target_date, lead_time, unit='days'):
 
 def format_date_deadline(d, reference_date=None):
     """
-    Formatiert das Datum. Liegt es in der Vergangenheit, wird das heutige (oder übergebene Referenz-)
-    Datum als nächstmöglicher Aktionstag gesetzt und das alte Datum markiert.
+    Formatiert ein Bestelldatum (TT.MM.JJJJ) für die Anzeige.
+
+    Liegt das Datum vor dem Referenzdatum, wird der Verzug markiert: Das Referenzdatum
+    wird als nächstmöglicher Aktionstag mit 🔴 und Angabe des Ursprungstermins dargestellt.
+
+    Args:
+        d (date-like): Zu formatierendes Bestelldatum.
+        reference_date (date-like, optional): Stichtag zur Fristprüfung. Standard ist heute.
+
+    Returns:
+        str: Formatierter Datums-String oder '-' bei leerem Eingabewert.
     """
     if pd.isnull(d):
         return "-"

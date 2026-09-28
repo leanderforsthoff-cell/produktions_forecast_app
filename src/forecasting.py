@@ -1,10 +1,21 @@
+"""Statistische Absatzprognose auf Basis historischer Verkaufszahlen und Saisonalität."""
+
 import pandas as pd
 
 def generate_system_forecast(inventory_df, history_df, target_months):
     """
-    Erstellt eine Vorhersage zum Absatz des übergebenen inventory_df für die Monate target_months.
-    Auf Basis der Verkaufsdaten aus history_df.
-    Gibt einen Dataframe mit Vorhersagedaten zurück.
+    Erstellt eine statistische Absatzprognose je Artikel für die angegebenen Zielmonate.
+
+    Kombiniert bei vorliegenden Vorjahresdaten den Vorjahresabsatz (60 %) mit dem
+    gleitenden 3-Monats-Mittelwert (40 %), andernfalls wird der 3-Monats-Mittelwert herangezogen.
+
+    Args:
+        inventory_df (pd.DataFrame): Artikelbestand mit Spalte 'Artikelnummer'.
+        history_df (pd.DataFrame): Historische Verkäufe ('Artikelnummer', 'Verkaufsmonat', 'Verkaufsmenge').
+        target_months (list): Liste von Zielmonaten (z. B. als datetime.date oder pd.Timestamp).
+
+    Returns:
+        pd.DataFrame: DataFrame mit 'Artikelnummer' und Spalten 'System_M{i}' je Zielmonat.
     """
     if (
         not target_months 
@@ -47,8 +58,8 @@ def generate_system_forecast(inventory_df, history_df, target_months):
             
             avg_3m = int(series.tail(3).mean()) if len(series) >= 3 else 0
             
-            # Helper-Funktion für die Berechnung
             def calc_month(target_date):
+                """Berechnet den Prognosewert für einen Zielmonat (Vorjahr 60 % + 3M-Schnitt 40 %)."""
                 last_year_date = target_date - pd.DateOffset(years=1)
                 if last_year_date >= min_date:
                     val_last_year = series.get(last_year_date, 0)

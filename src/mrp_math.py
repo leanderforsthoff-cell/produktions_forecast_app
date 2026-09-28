@@ -1,13 +1,28 @@
+"""Materialbedarfsplanung (MRP), Stücklistenauflösung und monatliche Cashbedarfsberechnung."""
+
 import datetime
 import numpy as np
 import pandas as pd
-from src.utils import calculate_order_deadline
+from src.utils import calculate_order_deadline, monate_de
 
 def calculate_material_requirements(production_plan, df_cogs, df_mat_stock):
     """
-    Vektorisierte Berechnung des Materialbedarfs (MRP).
-    Verbindet Produktionsplan und Stücklisten (COGS) über pd.merge()
-    und teilt Lagerbestände chronologisch über kumulierte Summen zu.
+    Führt eine Materialbedarfsplanung (MRP) mit Stücklistenauflösung durch.
+
+    Löst den Produktionsplan über Stücklisten (COGS) in Bruttobedarfe auf, weist
+    Lagerbestände chronologisch über kumulierte Summen zu und ermittelt Netto-Bestellungen
+    je Lieferant und Bestelltermin sowie ein detailliertes Verwendungs-Protokoll.
+
+    Args:
+        production_plan (pd.DataFrame): Produktionsplan mit Spalten 'Produktion_M{i}'
+            und 'Bestelldatum_M{i}'.
+        df_cogs (pd.DataFrame): Stücklisten und Lieferanteninformationen (COGS).
+        df_mat_stock (pd.DataFrame): Rohstoffbestände ('materialArticleNumber', 'Aktueller_Materialbestand').
+
+    Returns:
+        tuple[pd.DataFrame, pd.DataFrame]:
+            - df_orders: Gruppierte Materialbestellungen je Lieferant und Stichtag.
+            - df_details: Detaillierte Zuteilung (Brutto, Lager, Netto) je Fertigprodukt.
     """
     if production_plan.empty or df_cogs.empty:
         return pd.DataFrame(), pd.DataFrame()
@@ -130,9 +145,18 @@ def calculate_material_requirements(production_plan, df_cogs, df_mat_stock):
 
 def calculate_cash_needs(df_orders, reference_date=None):
     """
-    Berechnet den aggregierten Cashbedarf pro Monat auf Basis des spätesten Bestelldatums.
-    Bedarfe, deren Bestelldatum vor dem Stichtag liegt (abgelaufene Frist / Lost Sale),
+    Berechnet den aggregierten Liquiditätsbedarf (Cashbedarf) je Bestellmonat.
+
+    Summiert das Bestellvolumen auf Basis des spätesten Bestelldatums. Positionen,
+    deren Frist vor dem Stichtag liegt (abgelaufene Bestellfrist / Lost Sales),
     werden nicht berücksichtigt.
+
+    Args:
+        df_orders (pd.DataFrame): Bestellpositionen mit 'Spätestes_Bestelldatum' und 'Gesamtpreis'.
+        reference_date (date-like, optional): Stichtag zur Fristprüfung. Standard ist heute.
+
+    Returns:
+        pd.DataFrame: Aggregierter Cashbedarf mit 'Bestellmonat' und 'Cashbedarf (€)'.
     """
     if (
         df_orders is None 
@@ -167,7 +191,6 @@ def calculate_cash_needs(df_orders, reference_date=None):
     cash_df = df.groupby("Monat_Period")["Gesamtpreis"].sum().reset_index()
     cash_df = cash_df.sort_values(by="Monat_Period").reset_index(drop=True)
 
-    monate_de = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
     cash_df["Bestellmonat"] = cash_df["Monat_Period"].apply(
         lambda p: f"{monate_de[p.month - 1]} {p.year}"
     )

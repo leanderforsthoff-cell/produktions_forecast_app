@@ -1,11 +1,28 @@
+"""Nettobedarfs- und Produktionsplanung unter Berücksichtigung von Mindestbeständen, Losgrößen und Vorlaufzeiten."""
+
+import datetime
 import numpy as np
 import pandas as pd
 from src.utils import calculate_order_deadline
-import datetime
 
 def calculate_production_needs(df_plan, target_months, constraints_dict=None):
     """
-    Berechnet Produktionsmengen und Bestelldaten für einen dynamischen Planungshorizont.
+    Berechnet monatliche Nettoproduktionsbedarfe und Bestelltermine unter Berücksichtigung von Restriktionen.
+
+    Ermittelt je Monat den Bedarf unter Einbezug von Mindestbestand und Mindestbestellmenge (MOQ).
+    Liegt die Vorlaufzeit-Deadline vor dem aktuellen Tag (Gefrorene Periode), wird kein
+    Produktionsauftrag mehr ausgelöst und ein drohender Fehlbestand (Lost Sales) ausgewiesen.
+    Der Lagerbestand wird dynamisch fortgeschrieben.
+
+    Args:
+        df_plan (pd.DataFrame): Planungsdaten mit 'Artikelnummer', 'Artikelname', 'Aktueller_Bestand'
+            sowie den Bedarfswerten 'Manuell_M{i}'.
+        target_months (list): Liste der Zielmonate im Planungshorizont.
+        constraints_dict (dict, optional): Artikelrestriktionen ('MOQ', 'Mindestbestand', 'Vorlaufzeit_Wochen').
+
+    Returns:
+        pd.DataFrame: Planungsübersicht mit Produktionsmengen ('Produktion_M{i}'),
+            Bestellterminen ('Bestelldatum_M{i}') und Fehlbeständen ('Fehlbestand_M{i}').
     """
     if df_plan.empty or not target_months:
         cols = ["Artikelnummer", "Artikelname", "MOQ", "Safety_Stock", "Lead_Time_Weeks"]
