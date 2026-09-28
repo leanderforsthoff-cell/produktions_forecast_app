@@ -1,3 +1,4 @@
+import datetime
 import numpy as np
 import pandas as pd
 from src.utils import calculate_order_deadline
@@ -126,3 +127,52 @@ def calculate_material_requirements(production_plan, df_cogs, df_mat_stock):
     }).reset_index().sort_values(by=["Lieferant", "Spätestes_Bestelldatum"]).reset_index(drop=True)
 
     return df_orders, df_details
+
+
+def calculate_cash_needs(df_orders, reference_date=None):
+    """
+    Berechnet den aggregierten Cashbedarf pro Monat auf Basis des spätesten Bestelldatums.
+    Bedarfe, deren Bestelldatum vor dem Stichtag liegt (abgelaufene Frist / Lost Sale),
+    werden nicht berücksichtigt.
+    """
+    if (
+        df_orders is None 
+        or df_orders.empty 
+        or "Spätestes_Bestelldatum" not in df_orders.columns 
+        or "Gesamtpreis" not in df_orders.columns
+    ):
+        return pd.DataFrame(columns=["Bestellmonat", "Cashbedarf (€)"])
+
+    if reference_date is None:
+        reference_date = datetime.date.today()
+    elif isinstance(reference_date, (datetime.datetime, pd.Timestamp)):
+        reference_date = reference_date.date()
+
+    df = df_orders.copy()
+
+    # Vektorisierte Typ-Konvertierung ohne Annahmen über UI-String-Formatierungen
+    df["dt_bestelldatum"] = pd.to_datetime(df["Spätestes_Bestelldatum"], errors="coerce")
+    df = df.dropna(subset=["dt_bestelldatum"])
+    if df.empty:
+        return pd.DataFrame(columns=["Bestellmonat", "Cashbedarf (€)"])
+
+    # Nur Bestellungen berücksichtigen, deren Frist noch nicht abgelaufen ist (Lost Sales ausschließen)
+    df = df[df["dt_bestelldatum"].dt.date >= reference_date]
+    if df.empty:
+        return pd.DataFrame(columns=["Bestellmonat", "Cashbedarf (€)"])
+
+    # Monatsperiode für die Gruppierung und Sortierung
+    df["Monat_Period"] = df["dt_bestelldatum"].dt.to_period("M")
+
+    # Aggregation der Gesamtkosten pro Monat
+    cash_df = df.groupby("Monat_Period")["Gesamtpreis"].sum().reset_index()
+    cash_df = cash_df.sort_values(by="Monat_Period").reset_index(drop=True)
+
+    monate_de = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
+    cash_df["Bestellmonat"] = cash_df["Monat_Period"].apply(
+        lambda p: f"{monate_de[p.month - 1]} {p.year}"
+    )
+    cash_df["Cashbedarf (€)"] = cash_df["Gesamtpreis"].round(2)
+
+    return cash_df[["Bestellmonat", "Cashbedarf (€)"]]
+

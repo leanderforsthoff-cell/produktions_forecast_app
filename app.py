@@ -7,16 +7,17 @@ import numpy as np
 import streamlit as st
 
 from src.data_integration import (
-    fetch_current_inventory, 
-    fetch_historical_sales, 
-    save_forecast_to_bq, 
-    fetch_available_articles, 
-    fetch_bom_for_articles,
-    fetch_material_stock
+    get_bq_client as _get_bq_client,
+    fetch_available_articles as _fetch_available_articles,
+    fetch_current_inventory as _fetch_current_inventory,
+    fetch_historical_sales as _fetch_historical_sales,
+    fetch_bom_for_articles as _fetch_bom_for_articles,
+    fetch_material_stock as _fetch_material_stock,
+    save_forecast_to_bq
 )
 from src.forecasting import generate_system_forecast
 from src.inventory_math import calculate_production_needs
-from src.mrp_math import calculate_material_requirements
+from src.mrp_math import calculate_material_requirements, calculate_cash_needs
 from src.utils import get_target_months
 
 # ==========================================
@@ -41,6 +42,34 @@ def format_date_deadline(d):
     return d.strftime("%d.%m.%Y")
 
 monate_de = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
+
+# ==========================================
+# STREAMLIT CACHING (DATA INTEGRATION LAYER)
+# ==========================================
+@st.cache_resource
+def get_bq_client():
+    """Hält den BigQuery-Client für die Streamlit-Session gecacht."""
+    return _get_bq_client()
+
+@st.cache_data(ttl=3600, show_spinner="Lade Artikelstammdaten aus BigQuery...")
+def fetch_available_articles():
+    return _fetch_available_articles(client=get_bq_client())
+
+@st.cache_data(ttl=600, show_spinner="Lade aktuellen Lagerbestand...")
+def fetch_current_inventory(article_list):
+    return _fetch_current_inventory(article_list, client=get_bq_client())
+
+@st.cache_data(ttl=1800, show_spinner="Lade historische Verkaufsdaten...")
+def fetch_historical_sales(article_list):
+    return _fetch_historical_sales(article_list, client=get_bq_client())
+
+@st.cache_data(ttl=3600, show_spinner="Lade Stücklisten (COGS)...")
+def fetch_bom_for_articles(article_list):
+    return _fetch_bom_for_articles(article_list, client=get_bq_client())
+
+@st.cache_data(ttl=600, show_spinner="Lade Materialbestände...")
+def fetch_material_stock(material_numbers):
+    return _fetch_material_stock(material_numbers, client=get_bq_client())
 
 # ==========================================
 # 1. SIDEBAR (ARTIKEL & CONSTRAINTS)
@@ -228,6 +257,8 @@ st.write("Berechnet auf Basis des Produktionsplans, abzgl. aktuellem Materialbes
 
 with st.spinner("Berechne Materialbedarf und prüfe Lagerbestände..."):
     df_cogs = fetch_bom_for_articles(selected_article_numbers)
+    material_orders = pd.DataFrame()
+    material_details = pd.DataFrame()
     
     if not df_cogs.empty:
         unique_materials = df_cogs["materialArticleNumber"].dropna().unique().tolist()
@@ -322,3 +353,27 @@ with st.spinner("Berechne Materialbedarf und prüfe Lagerbestände..."):
 
     else:
         st.warning("Keine Stücklisten (COGS) für die ausgewählten Produkte gefunden.")
+
+# ==========================================
+# 6. CASHBEDARF PRO MONAT
+# ==========================================
+st.divider()
+st.header("4. Cashbedarf pro Monat")
+st.write("Aggregierter Cashbedarf basierend auf den spätesten Bestelldaten für Material und Produktion. Bestellungen mit abgelaufener Frist (Lost Sales) werden nicht berücksichtigt.")
+
+df_cash_needs = calculate_cash_needs(material_orders)
+
+if not df_cash_needs.empty:
+    st.dataframe(
+        df_cash_needs,
+        column_config={
+            "Cashbedarf (€)": st.column_config.NumberColumn(
+                "Cashbedarf (€)",
+                format="%.2f €"
+            )
+        },
+        hide_index=True,
+        width='stretch'
+    )
+else:
+    st.info("Kein Cashbedarf ermittelt, da keine rechtzeitig bestellbaren Bedarfe im Planungszeitraum anfallen.")

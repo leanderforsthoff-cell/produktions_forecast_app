@@ -1,23 +1,22 @@
+import datetime
 import pandas as pd
 from google.cloud import bigquery
 from dotenv import load_dotenv
-import datetime
-import streamlit as st
 
 # Lade die Umgebungsvariablen aus der .env Datei
 load_dotenv()
 
-@st.cache_resource
+
 def get_bq_client():
     """Initialisiert den BigQuery Client mit den Credentials aus der .env"""
     return bigquery.Client()
 
-@st.cache_data(ttl=3600, show_spinner="Lade Artikelstammdaten aus BigQuery...")
-def fetch_available_articles():
+
+def fetch_available_articles(client=None):
     """Holt eine Liste aller relevanten Artikel (Nummer und Name) für das UI-Dropdown."""
-    client = get_bq_client()
-    
-    # Wir holen alle Artikel aus der Bestandstabelle inkl. Namen
+    if client is None:
+        client = get_bq_client()
+
     query = """
         SELECT DISTINCT 
             stock.article_number AS Artikelnummer,
@@ -36,13 +35,14 @@ def fetch_available_articles():
     """
     return client.query(query).to_dataframe()
 
-@st.cache_data(ttl=600, show_spinner="Lade aktuellen Lagerbestand...")
-def fetch_current_inventory(article_list):
+
+def fetch_current_inventory(article_list, client=None):
     """Holt den aggregierten Bestand inkl. Artikelnamen aus BigQuery."""
     if not article_list:
         return pd.DataFrame(columns=["Artikelnummer", "Artikelname", "Aktueller_Bestand"])
 
-    client = get_bq_client()
+    if client is None:
+        client = get_bq_client()
 
     query = """
         SELECT 
@@ -71,17 +71,18 @@ def fetch_current_inventory(article_list):
     
     # Query mit der Konfiguration ausführen
     df = client.query(query, job_config=job_config).to_dataframe()
-    
     df['Aktueller_Bestand'] = df['Aktueller_Bestand'].fillna(0).astype(int)
     
     return df
 
-@st.cache_data(ttl=1800, show_spinner="Lade historische Verkaufsdaten...")
-def fetch_historical_sales(article_list):
+
+def fetch_historical_sales(article_list, client=None):
+    """Holt monatlich aggregierte Verkaufszahlen der letzten 36 Monate aus BigQuery."""
     if not article_list:
         return pd.DataFrame(columns=["Artikelnummer", "Verkaufsmonat", "Verkaufsmenge"])
 
-    client = get_bq_client()
+    if client is None:
+        client = get_bq_client()
     
     query = """
         SELECT 
@@ -116,7 +117,8 @@ def fetch_historical_sales(article_list):
     
     return df
 
-def save_forecast_to_bq(edited_df, production_plan, target_months):
+
+def save_forecast_to_bq(edited_df, production_plan, target_months, client=None):
     """
     Formatiert die Daten ins saubere Datenbank-Format (Long-Format) um, 
     löscht eventuelle alte Speichervorgänge des gleichen Meetings und speichert dann.
@@ -125,7 +127,9 @@ def save_forecast_to_bq(edited_df, production_plan, target_months):
     if edited_df.empty or not target_months:
         return
 
-    client = get_bq_client()
+    if client is None:
+        client = get_bq_client()
+
     table_id = "pollymain.playground.forecast_snapshots"
     
     # Wir definieren den aktuellen Monat als "Planungsmonat" (z.B. 2026-09-01)
@@ -141,8 +145,8 @@ def save_forecast_to_bq(edited_df, production_plan, target_months):
     """
     try:
         client.query(delete_query).result()
-    except Exception as e:
-        # Wenn die Tabelle noch gar nicht existiert, wirft BQ einen Fehler. Den ignorieren wir.
+    except Exception:
+        # Falls die Tabelle noch gar nicht existiert, wirft BQ einen Fehler.
         pass
 
     # 2. Daten dynamisch ins Long-Format transformieren
@@ -183,13 +187,15 @@ def save_forecast_to_bq(edited_df, production_plan, target_months):
     job_config = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND")
     client.load_table_from_dataframe(df_long, table_id, job_config=job_config).result()
 
-@st.cache_data(ttl=3600, show_spinner="Lade Stücklisten (COGS)...")
-def fetch_bom_for_articles(article_list):
+
+def fetch_bom_for_articles(article_list, client=None):
     """Holt die Stücklisten inkl. Lieferantendaten für die ausgewählten Artikel."""
     if not article_list:
         return pd.DataFrame()
 
-    client = get_bq_client()
+    if client is None:
+        client = get_bq_client()
+
     base_numbers = sorted(list(set([str(art).split('-')[0] for art in article_list])))
     
     query = """
@@ -215,8 +221,8 @@ def fetch_bom_for_articles(article_list):
     )
     return client.query(query, job_config=job_config).to_dataframe()
 
-@st.cache_data(ttl=600, show_spinner="Lade Materialbestände...")
-def fetch_material_stock(material_numbers):
+
+def fetch_material_stock(material_numbers, client=None):
     """
     Holt den Bestand der Rohstoffe aus warehousestock.
     Schneidet eventuelle '-C' Suffixe ab und summiert die Mengen.
@@ -224,7 +230,8 @@ def fetch_material_stock(material_numbers):
     if not material_numbers:
         return pd.DataFrame()
 
-    client = get_bq_client()
+    if client is None:
+        client = get_bq_client()
     
     # Da warehousestock teils -C hat, nutzen wir SPLIT in SQL, 
     # um den vorderen Teil zu nehmen und ihn als INT64 zu casten.
