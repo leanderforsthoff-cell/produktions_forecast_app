@@ -1,5 +1,6 @@
 """Streamlit-Webanwendung für Produktions-Forecasting, Produktionsplanung und Material Requirements Planning (MRP)."""
 
+import datetime
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -14,12 +15,19 @@ from src.data_integration import (
     fetch_historical_sales as _fetch_historical_sales,
     fetch_bom_for_articles as _fetch_bom_for_articles,
     fetch_material_stock as _fetch_material_stock,
+    fetch_open_purchase_orders as _fetch_open_purchase_orders,
+    fetch_open_production_orders as _fetch_open_production_orders,
     save_forecast_to_bq
 )
-from src.forecasting import generate_system_forecast
-from src.inventory_math import calculate_production_needs
-from src.mrp_math import calculate_material_requirements, calculate_cash_needs
-from src.utils import get_target_months, format_date_deadline, monate_de
+from src.planning_service import (
+    run_full_planning_cycle,
+    extract_out_of_stock_warnings,
+    format_display_plan,
+    build_initial_planning_matrix,
+    load_and_prepare_data as _service_load_and_prepare_data,
+    prepare_supplier_order_summary,
+)
+from src.utils import get_target_months, format_date_deadline, format_currency, format_quantity, monate_de, to_date
 
 # ==========================================
 # 0. SEITEN-KONFIGURATION & GLOBALE FUNKTIONEN
@@ -60,6 +68,16 @@ def fetch_material_stock(material_numbers):
     """Lädt Rohstoff-Lagerbestände für die Stücklisten-Komponenten (10 Minuten gecacht)."""
     return _fetch_material_stock(material_numbers, client=get_bq_client())
 
+@st.cache_data(ttl=600, show_spinner="Lade offene Materialbestellungen...")
+def fetch_open_purchase_orders():
+    """Lädt offene Materialbestellungen aus BigQuery (10 Minuten gecacht)."""
+    return _fetch_open_purchase_orders(client=get_bq_client(), reference_date=datetime.date.today())
+
+@st.cache_data(ttl=600, show_spinner="Lade offene Produktionsaufträge...")
+def fetch_open_production_orders():
+    """Lädt offene Produktionsaufträge und deren Materialbedarfe aus BigQuery (10 Minuten gecacht)."""
+    return _fetch_open_production_orders(client=get_bq_client(), reference_date=datetime.date.today())
+
 # ==========================================
 # 1. SIDEBAR (ARTIKEL & CONSTRAINTS)
 # ==========================================
@@ -94,7 +112,6 @@ st.sidebar.divider()
 st.sidebar.header("📐 3. Parameter (MOQ & Puffer)")
 st.sidebar.write("Bestimme die Nebenbedingungen für die ausgewählten Produkte.")
 
-# Standard-Werte für das Sidebar-UI aufbauen
 df_constraints_raw = pd.DataFrame({
     "Artikelnummer": selected_article_numbers,
     "Name": [art_names.get(nr, nr) for nr in selected_article_numbers],
@@ -103,7 +120,6 @@ df_constraints_raw = pd.DataFrame({
     "Vorlaufzeit_Wochen": 4
 })
 
-# Der interaktive Editor in der Seitenleiste
 edited_constraints_df = st.sidebar.data_editor(
     df_constraints_raw,
     disabled=["Artikelnummer", "Name"],
@@ -111,7 +127,6 @@ edited_constraints_df = st.sidebar.data_editor(
     width='stretch'
 )
 
-# Umwandeln in ein Dictionary für unsere Mathematik-Funktionen
 constraints_dict = edited_constraints_df.set_index("Artikelnummer").to_dict(orient="index")
 
 st.sidebar.divider()
@@ -124,28 +139,14 @@ if st.sidebar.button("🔄 Cache leeren & aktualisieren", help="Löscht den Zwis
 # 2. DATEN LADEN & FORECAST EDITOR
 # ==========================================
 def load_and_prepare_data(target_months, article_list):
-    """
-    Lädt Bestände sowie Historie und kombiniert sie mit dem System-Forecast zur initialen Planungsmatrix.
+    """Lädt Bestände sowie Historie und delegiert die Matrixerstellung an planning_service."""
+    return _service_load_and_prepare_data(
+        target_months,
+        article_list,
+        fetch_inventory_fn=fetch_current_inventory,
+        fetch_history_fn=fetch_historical_sales,
+    )
 
-    Args:
-        target_months (list): Geplante Zielmonate.
-        article_list (list[str]): Ausgewählte Fertigprodukt-Artikelnummern.
-
-    Returns:
-        pd.DataFrame: Planungsmatrix mit Ist-Bestand, Systemprognose und initialen manuellen Werten.
-    """
-    inventory = fetch_current_inventory(article_list)
-    history = fetch_historical_sales(article_list)
-    
-    forecast = generate_system_forecast(inventory, history, target_months)
-    df_merged = pd.merge(inventory, forecast, on="Artikelnummer", how="left")
-    
-    # Manuelle Spalten initialisieren
-    for m in range(1, len(target_months) + 1):
-        df_merged[f"Manuell_M{m}"] = df_merged[f"System_M{m}"].fillna(0).astype(int)
-    return df_merged
-
-# State-Management für die Tabelle
 if (
     "last_selection" not in st.session_state 
     or st.session_state.last_selection != selected_article_numbers
@@ -181,61 +182,60 @@ edited_df = st.data_editor(
 # ==========================================
 st.divider()
 st.header("2. Produktionsbedarf & Bestelltermine")
-st.write("Bestelltermine basieren auf einer Bestellung zum 15. des Monats minus X Wochen Vorlaufzeit.")
+st.write("Bestelltermine basieren auf dem spätestmöglichen Starttermin, damit die Produktion zum 1. des Monats fertig ist.")
+st.caption("ℹ️ Offene Produktionen mit Fertigstellung im aktuellen Monat werden dem Anfangsbestand des ersten Planungsmonats gutgeschrieben und decken die Bedarfe der kommenden Monate ab.")
 
-# Produktionsplan berechnen
-production_plan = calculate_production_needs(edited_df, target_month_dates, constraints_dict)
+df_open_prod = fetch_open_production_orders()
+df_cogs = fetch_bom_for_articles(selected_article_numbers)
 
-# --- A. WARNHINWEISE FÜR DROHENDE FEHLBESTÄNDE ---
-out_of_stock_warnings = []
-for m_idx, m_label in enumerate(month_labels, start=1):
-    shortage_col = f"Fehlbestand_M{m_idx}"
-    if shortage_col in production_plan.columns:
-        affected = production_plan[production_plan[shortage_col] > 0]
-        if not affected.empty:
-            formatted_shortage = affected[shortage_col].apply(lambda val: f"{val:,}".replace(",", "."))
-            warnings = (
-                "**" + affected["Artikelname"] + "**: Drohende Fehlmenge von **"
-                + formatted_shortage + f" Stück** im **{m_label}** "
-                + "(Bestelldeadline ist abgelaufen – Produktion nicht mehr rechtzeitig möglich!)."
-            ).tolist()
-            out_of_stock_warnings.extend(warnings)
-            
+if not df_cogs.empty:
+    unique_materials = df_cogs["materialArticleNumber"].dropna().unique().tolist()
+    df_mat_stock = fetch_material_stock(unique_materials)
+    df_open_po = fetch_open_purchase_orders()
+else:
+    df_mat_stock = pd.DataFrame()
+    df_open_po = pd.DataFrame()
+
+# Zentraler Aufruf des Planungszyklus
+planning_res = run_full_planning_cycle(
+    edited_df,
+    target_month_dates,
+    constraints_dict,
+    df_open_prod=df_open_prod,
+    df_cogs=df_cogs,
+    df_mat_stock=df_mat_stock,
+    df_open_po=df_open_po,
+    reference_date=datetime.date.today(),
+)
+
+production_plan = planning_res["production_plan"]
+open_prod_shortages = planning_res["open_prod_shortages"]
+material_orders = planning_res["material_orders"]
+material_details = planning_res["material_details"]
+df_cash_needs = planning_res["cash_needs"]
+
+# --- A. WARNHINWEISE FÜR OFFENE PRODUKTIONEN (MATERIALMANGEL) ---
+if open_prod_shortages:
+    with st.container():
+        st.error("🚨 **Achtung: Fehlende Materialien für bereits angesetzte Produktionen!**")
+        for s in open_prod_shortages:
+            d_str = format_date_deadline(s["target_end_date"])
+            qty_str = format_quantity(s["shortage_qty"], s["unit"])
+            st.warning(
+                f"**Auftrag {s['production_order_id']} ({s['product_name']})** zum **{d_str}**: "
+                f"Es fehlen **{qty_str}** von **{s['material_name']}**! ({s['reason']})"
+            )
+
+# --- B. WARNHINWEISE FÜR DROHENDE FEHLBESTÄNDE (NEUE PRODUKTIONEN) ---
+out_of_stock_warnings = extract_out_of_stock_warnings(production_plan, month_labels)
 if out_of_stock_warnings:
     with st.container():
         st.error("🚨 **Achtung: Drohende Fehlbestände (Out-of-Stock)!**")
         for warnung in out_of_stock_warnings:
             st.warning(warnung)
 
-# --- B. UI-AUFBEREITUNG DER TABELLE ---
-display_plan = production_plan.copy()
-for m in range(1, len(target_month_dates) + 1):
-    order_col = f"Bestelldatum_M{m}"
-    shortage_col = f"Fehlbestand_M{m}"
-    prod_col = f"Produktion_M{m}"
-
-    if order_col in display_plan.columns:
-        display_plan[order_col] = display_plan[order_col].apply(format_date_deadline)
-
-    # Betroffene Produktionszellen visuell mit ⚠️ hervorheben
-    if shortage_col in display_plan.columns and prod_col in display_plan.columns:
-        display_plan[prod_col] = np.where(
-        display_plan[shortage_col] > 0,
-        display_plan[prod_col].astype(str) + " ⚠️",
-        display_plan[prod_col].astype(str)
-    )
-
-ui_columns = ["Artikelname", "MOQ", "Lead_Time_Weeks"]
-rename_map = {"Lead_Time_Weeks": "Vorlauf (Wochen)"}
-
-for m_idx, m_label in enumerate(month_labels, start=1):
-    ui_columns.extend([f"Produktion_M{m_idx}", f"Bestelldatum_M{m_idx}"])
-    rename_map[f"Produktion_M{m_idx}"] = f"Produktion {m_label}"
-    rename_map[f"Bestelldatum_M{m_idx}"] = f"Order für {m_label}"
-
-valid_ui_cols = [c for c in ui_columns if c in display_plan.columns]
-display_plan = display_plan[valid_ui_cols].rename(columns=rename_map)
-
+# --- C. UI-AUFBEREITUNG DER TABELLE ---
+display_plan = format_display_plan(production_plan, target_month_dates, month_labels)
 st.dataframe(display_plan, hide_index=True, width='content')
 
 # ==========================================
@@ -254,65 +254,56 @@ if st.button("💾 Forecast speichern", type="primary"):
 # ==========================================
 st.divider()
 st.header("3. Material-Bestelllisten (MRP)")
-st.write("Berechnet auf Basis des Produktionsplans, abzgl. aktuellem Materialbestand. Gruppiert nach Lieferant.")
+st.write("Berechnet auf Basis des Produktionsplans, abzgl. aktuellem Materialbestand und offenen Bestellungen. Gruppiert nach Lieferant.")
 
-with st.spinner("Berechne Materialbedarf und prüfe Lagerbestände..."):
-    df_cogs = fetch_bom_for_articles(selected_article_numbers)
-    material_orders = pd.DataFrame()
-    material_details = pd.DataFrame()
-    
-    if not df_cogs.empty:
-        unique_materials = df_cogs["materialArticleNumber"].dropna().unique().tolist()
-        df_mat_stock = fetch_material_stock(unique_materials)
-        
-        material_orders, material_details = calculate_material_requirements(production_plan, df_cogs, df_mat_stock)
-        
-        # --- A. BESTELLLISTEN FÜR DIE LIEFERANTEN ---
-        if not material_orders.empty:
-            display_orders = material_orders.copy()
-            # Hier nutzen wir jetzt auch unsere smarte Datums-Funktion!
-            display_orders["Spätestes_Bestelldatum"] = display_orders["Spätestes_Bestelldatum"].apply(format_date_deadline)
-            display_orders["Für_Produktion_Am"] = display_orders["Für_Produktion_Am"].apply(format_date_deadline)
-
-            # Spalten schöner benennen
-            display_orders = display_orders.rename(columns={
-                "Einzelpreis": "Einzelpreis (€)",
-                "Gesamtpreis": "Gesamtpreis (€)"
+if not df_cogs.empty:
+    if open_prod_shortages:
+        with st.expander("🚨 Materialengpässe bei offenen Produktionsaufträgen", expanded=True):
+            st.write("Für folgende bereits angesetzte Produktionen reicht das Material auf Lager oder in rechtzeitigen Bestellungen nicht aus:")
+            df_ops = pd.DataFrame(open_prod_shortages)[[
+                "production_order_id", "product_name", "target_end_date", "material_name", "shortage_qty", "unit", "reason"
+            ]].rename(columns={
+                "production_order_id": "Auftrags-ID",
+                "product_name": "Produkt",
+                "target_end_date": "Fertigstellung",
+                "material_name": "Fehlendes Material",
+                "shortage_qty": "Fehlmenge",
+                "unit": "Einheit",
+                "reason": "Ursache"
             })
+            df_ops["Fertigstellung"] = df_ops["Fertigstellung"].apply(format_date_deadline)
+            df_ops["Fehlmenge"] = df_ops["Fehlmenge"].apply(format_quantity)
+            st.dataframe(df_ops, hide_index=True, width='stretch')
+    
+    # --- A. BESTELLLISTEN FÜR DIE LIEFERANTEN ---
+    if not material_orders.empty:
+        display_orders = material_orders.copy()
+        display_orders["Produktion_Datum"] = display_orders["Für_Produktion_Am"].apply(to_date)
+        display_orders["Spätestes_Bestelldatum"] = display_orders["Spätestes_Bestelldatum"].apply(format_date_deadline)
+        display_orders["Für_Produktion_Am"] = display_orders["Für_Produktion_Am"].apply(format_date_deadline)
+        display_orders = display_orders.rename(columns={
+            "Einzelpreis": "Einzelpreis (€)",
+            "Gesamtpreis": "Gesamtpreis (€)"
+        })
 
-            suppliers = sorted(display_orders["Lieferant"].dropna().unique())
+        suppliers = sorted(display_orders["Lieferant"].dropna().unique())
+        
+        if suppliers:
+            tabs = st.tabs([str(s) for s in suppliers])
+            spalten_reihenfolge = [
+                "Material_Nr", "Material_Name", "Bestellmenge", "Einheit", 
+                "Einzelpreis (€)", "Gesamtpreis (€)", "Vorlaufzeit_Tage",
+                "Spätestes_Bestelldatum", "Für_Produktion_Am", "Benötigt_Für_Produkt"
+            ]
             
-            if suppliers:
-                tabs = st.tabs([str(s) for s in suppliers])
-                
-                spalten_reihenfolge = [
-                    "Material_Nr", 
-                    "Material_Name", 
-                    "Bestellmenge", 
-                    "Einheit", 
-                    "Einzelpreis (€)",
-                    "Gesamtpreis (€)",
-                    "Vorlaufzeit_Tage",
-                    "Spätestes_Bestelldatum", 
-                    "Für_Produktion_Am", 
-                    "Benötigt_Für_Produkt"
-                ]
-                
-                for idx, supplier_name in enumerate(suppliers):
-                    with tabs[idx]:
-                        sup_df = display_orders[display_orders["Lieferant"] == supplier_name]
-                        
-                        # --- ZUSAMMENFASSUNG: CARD-GRID PRO PRODUKTIONSTERMIN MIT BORDER ---
-                        st.subheader("💰 Bestellvolumen")
-                        
-                        summary = sup_df.groupby("Für_Produktion_Am")["Gesamtpreis (€)"].agg(["sum", "count"]).reset_index()
-                        summary["formatted_cost"] = summary["sum"].apply(
-                            lambda val: f"{val:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
-                        )
-                        summary["delta_text"] = summary["count"].astype(int).apply(
-                            lambda cnt: f"{cnt} Position{'en' if cnt != 1 else ''}"
-                        )
-                        
+            for idx, supplier_name in enumerate(suppliers):
+                with tabs[idx]:
+                    sup_df = display_orders[display_orders["Lieferant"] == supplier_name]
+                    st.subheader("💰 Bestellvolumen")
+                    
+                    summary = prepare_supplier_order_summary(sup_df)
+                    
+                    if not summary.empty:
                         cols = st.columns(len(summary))
                         for s_idx, r in enumerate(summary.to_dict(orient="records")):
                             with cols[s_idx]:
@@ -323,39 +314,30 @@ with st.spinner("Berechne Materialbedarf und prüfe Lagerbestände..."):
                                         delta=r["delta_text"],
                                         delta_color="off"
                                     )
-                                    
-                        st.write("---")
-                        # ----------------------------------------------------------------------
-                        
-                        # Die eigentliche Tabelle anzeigen
-                        st.dataframe(sup_df[spalten_reihenfolge], hide_index=True, width='stretch')
-            else:
-                st.info("Alle Lieferanten-Felder sind leer.")
+                                
+                    st.write("---")
+                    st.dataframe(sup_df[spalten_reihenfolge], hide_index=True, width='stretch')
         else:
-            st.success("Aktuell ausreichender Materialbestand für den geplanten Produktionszeitraum! Keine Bestellungen notwendig.")
-            
-        # --- B. DETAILLIERTE STÜCKLISTEN-AUFLÖSUNG ---
-        if not material_details.empty:
-            st.write("---")
-            st.subheader("📋 Detaillierte Materialverwendung pro Produkt")
-            st.write("Diese Übersicht zeigt, wie der aktuelle Lagerbestand auf die geplanten Produktionen aufgeteilt wird.")
-            
-            # Datum schick formatieren
-            material_details["Produktion_Am"] = material_details["Produktion_Am"].apply(format_date_deadline)
-            
-            # NEU: Gruppierung in ausklappbare Menüs (Expanders) pro Produkt
-            unique_products = sorted(material_details["Produkt"].unique())
-            
-            for product in unique_products:
-                # Wir filtern die Tabelle für das jeweilige Produkt
-                prod_df = material_details[material_details["Produkt"] == product]
-                
-                with st.expander(f"📦 Materialbedarf für: {product}"):
-                    # Wir blenden die Spalte "Produkt" aus, da sie im Titel des Expanders steht
-                    st.dataframe(prod_df.drop(columns=["Produkt"]), hide_index=True, width='stretch')
-
+            st.info("Alle Lieferanten-Felder sind leer.")
     else:
-        st.warning("Keine Stücklisten (COGS) für die ausgewählten Produkte gefunden.")
+        st.success("Aktuell ausreichender Materialbestand für den geplanten Produktionszeitraum! Keine Bestellungen notwendig.")
+        
+    # --- B. DETAILLIERTE STÜCKLISTEN-AUFLÖSUNG ---
+    if not material_details.empty:
+        st.write("---")
+        st.subheader("📋 Detaillierte Materialverwendung pro Produkt")
+        st.write("Diese Übersicht zeigt, wie der aktuelle Lagerbestand auf die geplanten Produktionen aufgeteilt wird.")
+        
+        material_details["Produktion_Am"] = material_details["Produktion_Am"].apply(format_date_deadline)
+        unique_products = sorted(material_details["Produkt"].unique())
+        
+        for product in unique_products:
+            prod_df = material_details[material_details["Produkt"] == product]
+            with st.expander(f"📦 Materialbedarf für: {product}"):
+                st.dataframe(prod_df.drop(columns=["Produkt"]), hide_index=True, width='stretch')
+
+else:
+    st.warning("Keine Stücklisten (COGS) für die ausgewählten Produkte gefunden.")
 
 # ==========================================
 # 6. CASHBEDARF PRO MONAT
@@ -363,8 +345,6 @@ with st.spinner("Berechne Materialbedarf und prüfe Lagerbestände..."):
 st.divider()
 st.header("4. Cashbedarf pro Monat")
 st.write("Aggregierter Cashbedarf basierend auf den spätesten Bestelldaten für Material und Produktion. Bestellungen mit abgelaufener Frist (Lost Sales) werden nicht berücksichtigt.")
-
-df_cash_needs = calculate_cash_needs(material_orders)
 
 if not df_cash_needs.empty:
     st.dataframe(

@@ -4,10 +4,11 @@ Diese Streamlit-Applikation dient der datengestützten Produktions- und Material
 
 ## ✨ Hauptfunktionen
 
-*   **Google BigQuery Integration:** Automatischer Abruf von Live-Beständen, Verkaufshistorien und Stücklisten (BOM).
-*   **Interaktiver Sales Forecast:** Systemseitige Berechnung von Abverkaufsprognosen auf Basis historischer Daten (3-Monats-Schnitt & Vorjahreswerte), mit der Möglichkeit für manuelle Anpassungen im UI.
-*   **Produktionsplanung:** Automatische Berechnung von Produktionsbedarfen unter Berücksichtigung von Mindestbestellmengen (MOQ), Sicherheitsbeständen und Vorlaufzeiten.
-*   **Material Requirements Planning (MRP):** Detaillierte Stücklistenauflösung und Berechnung des Netto-Materialbedarfs (abzüglich aktueller Lagerbestände), gruppiert nach Lieferanten und spätesten Bestelldaten.
+*   **Google BigQuery Integration:** Automatischer Abruf von Live-Beständen, Verkaufshistorien, Stücklisten (BOM) sowie offenen Bestell- und Produktionsaufträgen.
+*   **Interaktiver Sales Forecast:** Systemseitige Absatzprognose (3-Monats-Schnitt & Vorjahressaisonalität) mit interaktiver manueller Anpassung.
+*   **Produktionsplanung & Machbarkeit:** Nettobedarfsrechnung mit MOQ, Sicherheitsbestand, tagesgenauen Vorlaufzeiten und automatischer Fristprüfung gegen Materialengpässe (Lost Sales).
+*   **Material Requirements Planning (MRP):** Stücklistenauflösung und FIFO-Netting mit Lagerbeständen und offenen Bestellungen, gruppiert nach Lieferant.
+*   **Liquiditätsübersicht:** Monatlich aggregierter Cashbedarf auf Basis spätester Bestellfristen.
 
 ## 📂 Projektstruktur
 
@@ -16,14 +17,17 @@ Diese Streamlit-Applikation dient der datengestützten Produktions- und Material
 ├── .env                        # Umgebungsvariablen (nicht in Git versioniert)
 ├── .gitignore                  # Ignorierte Dateien für Git
 ├── app.py                      # Hauptanwendung (Streamlit UI)
-├── requirements.txt            # Python Abhängigkeiten
+├── requirements.txt            # Python-Abhängigkeiten
 ├── service-account-key.json    # Google Cloud Zugangsdaten (nicht in Git versioniert)
 └── src/                        # Quellcode-Module
-    ├── data_integration.py     # BigQuery Queries & Datenabruf
-    ├── forecasting.py          # Logik zur Forecast-Berechnung
-    ├── inventory_math.py       # Berechnung der Produktionsmengen
-    ├── mrp_math.py             # Stücklistenauflösung & Bestellplanung
-    └── utils.py                # Hilfsfunktionen (z.B. Datumsberechnungen)
+    ├── bom.py                  # Stücklistenauflösung & COGS-Indizierung
+    ├── data_integration.py     # BigQuery-Queries & Snapshot-Persistenz
+    ├── forecasting.py          # Statistische Absatzprognose
+    ├── inventory_math.py       # Nettoproduktionsbedarf & Feasibility-Prüfung
+    ├── mrp_math.py             # MRP-Materialbedarfe & Cashbedarfsberechnung
+    ├── planning_service.py     # Workflow-Orchestrierung & UI-Aufbereitung
+    ├── supply_tracker.py       # MaterialSupplyTracker & FIFO-Allokation
+    └── utils.py                # Datums-, Währungs- und Mengenformatierung
 ```
 
 ## 🚀 Installation & Setup
