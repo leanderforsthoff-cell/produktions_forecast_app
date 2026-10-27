@@ -1,8 +1,12 @@
 """Orchestrierung des gesamten Planungszyklus: Forecast, Produktion, MRP und Cashbedarf."""
 
 import datetime
+import io
 from typing import Any, Dict, List, Optional, TypedDict
 import numpy as np
+import openpyxl
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 import pandas as pd
 
 from src.forecasting import generate_system_forecast
@@ -242,4 +246,232 @@ def prepare_supplier_order_summary(sup_df: pd.DataFrame) -> pd.DataFrame:
         lambda cnt: f"{cnt} Position{'en' if cnt != 1 else ''}"
     )
     return summary
+
+
+def prepare_material_orders_export(material_orders: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """
+    Bereitet die Materialbestellungen für den Excel-Export vor.
+
+    Sortiert zwingend nach Lieferant, gefolgt vom spätesten Bestelldatum,
+    und stellt sicher, dass Einzelpreis (€) und Gesamtpreis (€) pro Position ausgewiesen werden.
+    """
+    export_cols = [
+        "Lieferant",
+        "Material_Nr",
+        "Material_Name",
+        "Bestellmenge",
+        "Einheit",
+        "Einzelpreis (€)",
+        "Gesamtpreis (€)",
+        "Vorlaufzeit_Tage",
+        "Spätestes_Bestelldatum",
+        "Für_Produktion_Am",
+        "Benötigt_Für_Produkt",
+    ]
+    if material_orders is None or material_orders.empty:
+        return pd.DataFrame(columns=export_cols)
+
+    df = material_orders.copy()
+
+    # Preisfelder vereinheitlichen
+    if "Einzelpreis (€)" not in df.columns and "Einzelpreis" in df.columns:
+        df["Einzelpreis (€)"] = df["Einzelpreis"]
+    if "Gesamtpreis (€)" not in df.columns and "Gesamtpreis" in df.columns:
+        df["Gesamtpreis (€)"] = df["Gesamtpreis"]
+
+    # Datumsfelder säubern
+    if "Spätestes_Bestelldatum" in df.columns:
+        df["Spätestes_Bestelldatum"] = df["Spätestes_Bestelldatum"].apply(to_date)
+    if "Für_Produktion_Am" in df.columns:
+        df["Für_Produktion_Am"] = df["Für_Produktion_Am"].apply(to_date)
+
+    # Numerische Typen sicherstellen
+    if "Bestellmenge" in df.columns:
+        df["Bestellmenge"] = pd.to_numeric(df["Bestellmenge"], errors="coerce").fillna(0)
+    if "Einzelpreis (€)" in df.columns:
+        df["Einzelpreis (€)"] = pd.to_numeric(df["Einzelpreis (€)"], errors="coerce").fillna(0.0).round(2)
+    if "Gesamtpreis (€)" in df.columns:
+        df["Gesamtpreis (€)"] = pd.to_numeric(df["Gesamtpreis (€)"], errors="coerce").fillna(0.0).round(2)
+    if "Vorlaufzeit_Tage" in df.columns:
+        df["Vorlaufzeit_Tage"] = pd.to_numeric(df["Vorlaufzeit_Tage"], errors="coerce").fillna(0).astype(int)
+
+    # Nach Lieferant (aufsteigend) und spätestem Bestelldatum sortieren
+    sort_cols = [c for c in ["Lieferant", "Spätestes_Bestelldatum", "Material_Nr"] if c in df.columns]
+    if sort_cols:
+        df = df.sort_values(by=sort_cols, ascending=True, na_position="last").reset_index(drop=True)
+
+    # Fehlende Spalten auffüllen falls nötig
+    for c in export_cols:
+        if c not in df.columns:
+            df[c] = None
+
+    return df[export_cols]
+
+
+def prepare_production_orders_export(
+    production_plan: Optional[pd.DataFrame],
+    target_month_dates: List[Any],
+    month_labels: List[str],
+) -> pd.DataFrame:
+    """
+    Bereitet die anstehenden Produktionsaufträge (Menge > 0) für den Excel-Export vor.
+
+    Erstellt eine chronologische Auftragsliste, aus der hervorgeht, wann welche Menge
+    eines Fertigprodukts beauftragt werden muss und zu wann die Fertigstellung geplant ist.
+    """
+    export_cols = [
+        "Spätestes_Startdatum",
+        "Ziel_Fertigstellung",
+        "Zielmonat",
+        "Artikelnummer",
+        "Artikelname",
+        "Produktionsmenge",
+        "Vorlaufzeit_Wochen",
+        "Mindestbestellmenge (MOQ)",
+    ]
+    if production_plan is None or production_plan.empty or not target_month_dates:
+        return pd.DataFrame(columns=export_cols)
+
+    rows = []
+    num_months = min(len(target_month_dates), len(month_labels))
+
+    for _, row in production_plan.iterrows():
+        art_nr = str(row.get("Artikelnummer", "")).strip()
+        art_name = str(row.get("Artikelname", "")).strip()
+        lt_w = int(row.get("Lead_Time_Weeks", 0)) if pd.notna(row.get("Lead_Time_Weeks")) else 0
+        moq_val = int(row.get("MOQ", 0)) if pd.notna(row.get("MOQ")) else 0
+
+        for m_idx in range(1, num_months + 1):
+            prod_col = f"Produktion_M{m_idx}"
+            order_col = f"Bestelldatum_M{m_idx}"
+            qty_raw = row.get(prod_col, 0)
+            qty = float(qty_raw) if pd.notna(qty_raw) else 0.0
+
+            if qty > 0:
+                rows.append({
+                    "Spätestes_Startdatum": to_date(row.get(order_col)),
+                    "Ziel_Fertigstellung": to_date(target_month_dates[m_idx - 1]),
+                    "Zielmonat": month_labels[m_idx - 1],
+                    "Artikelnummer": art_nr,
+                    "Artikelname": art_name,
+                    "Produktionsmenge": int(qty),
+                    "Vorlaufzeit_Wochen": lt_w,
+                    "Mindestbestellmenge (MOQ)": moq_val,
+                })
+
+    if not rows:
+        return pd.DataFrame(columns=export_cols)
+
+    df_res = pd.DataFrame(rows)
+    df_res = df_res.sort_values(
+        by=["Spätestes_Startdatum", "Artikelname"],
+        ascending=True,
+        na_position="last",
+    ).reset_index(drop=True)
+    return df_res[export_cols]
+
+
+def export_planning_to_excel(
+    material_orders: Optional[pd.DataFrame],
+    production_plan: Optional[pd.DataFrame],
+    target_month_dates: List[Any],
+    month_labels: List[str],
+) -> bytes:
+    """
+    Erstellt eine Excel-Arbeitsmappe (.xlsx) mit zwei formatierten Sheets:
+    1. 'Materialbestellungen': Sortiert nach Lieferant mit Einzel- und Gesamtpreisen.
+    2. 'Produktionsaufträge': Anstehende Produktionen mit Beauftragungs- und Fertigstellungsterminen.
+
+    Gibt den Dateiinhalt als Bytes für den Streamlit-Download zurück.
+    """
+    df_mat = prepare_material_orders_export(material_orders)
+    df_prod = prepare_production_orders_export(production_plan, target_month_dates, month_labels)
+
+    wb = openpyxl.Workbook()
+
+    # Sheet 1: Materialbestellungen
+    ws_mat = wb.active
+    ws_mat.title = "Materialbestellungen"
+
+    # Sheet 2: Produktionsaufträge
+    ws_prod = wb.create_sheet(title="Produktionsaufträge")
+
+    header_fill = PatternFill(start_color="E8EEF5", end_color="E8EEF5", fill_type="solid")
+    header_font = Font(bold=True, size=11)
+
+    sheets_and_data = [
+        (
+            ws_mat,
+            df_mat,
+            {
+                "Einzelpreis (€)": "#,##0.00 €",
+                "Gesamtpreis (€)": "#,##0.00 €",
+                "Bestellmenge": "#,##0",
+                "Vorlaufzeit_Tage": "#,##0",
+                "Spätestes_Bestelldatum": "DD.MM.YYYY",
+                "Für_Produktion_Am": "DD.MM.YYYY",
+            },
+        ),
+        (
+            ws_prod,
+            df_prod,
+            {
+                "Produktionsmenge": "#,##0",
+                "Vorlaufzeit_Wochen": "#,##0",
+                "Mindestbestellmenge (MOQ)": "#,##0",
+                "Spätestes_Startdatum": "DD.MM.YYYY",
+                "Ziel_Fertigstellung": "DD.MM.YYYY",
+            },
+        ),
+    ]
+
+    for ws, df, num_formats in sheets_and_data:
+        # Kopfzeile schreiben
+        ws.append(list(df.columns))
+        ws.freeze_panes = "A2"
+
+        # Kopfzeilen-Styling
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center" if "datum" in str(cell.value).lower() else "left")
+
+        # Datenzeilen schreiben
+        for row_vals in df.itertuples(index=False):
+            ws.append(list(row_vals))
+
+        # Zell-Formatierungen anwenden
+        col_names = list(df.columns)
+        for row_idx in range(2, ws.max_row + 1):
+            for col_idx, col_name in enumerate(col_names, start=1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                if col_name in num_formats and cell.value is not None:
+                    cell.number_format = num_formats[col_name]
+                    if "€" in num_formats[col_name] or col_name in {"Bestellmenge", "Produktionsmenge"}:
+                        cell.alignment = Alignment(horizontal="right")
+                    elif "DD.MM.YYYY" in num_formats[col_name]:
+                        cell.alignment = Alignment(horizontal="center")
+
+        # Spaltenbreiten automatisch anpassen
+        for col in ws.columns:
+            max_len = 0
+            for cell in col:
+                val_str = ""
+                if cell.value is not None:
+                    if isinstance(cell.value, (datetime.date, datetime.datetime)):
+                        val_str = cell.value.strftime("%d.%m.%Y")
+                    elif isinstance(cell.value, float):
+                        val_str = f"{cell.value:,.2f}"
+                    else:
+                        val_str = str(cell.value)
+                if len(val_str) > max_len:
+                    max_len = len(val_str)
+            col_letter = get_column_letter(col[0].column)
+            ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
 

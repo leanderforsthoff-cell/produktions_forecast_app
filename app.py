@@ -26,6 +26,7 @@ from src.planning_service import (
     build_initial_planning_matrix,
     load_and_prepare_data as _service_load_and_prepare_data,
     prepare_supplier_order_summary,
+    export_planning_to_excel,
 )
 from src.utils import get_target_months, format_date_deadline, format_currency, format_quantity, monate_de, to_date
 
@@ -305,10 +306,9 @@ if not df_cogs.empty:
                     summary = prepare_supplier_order_summary(sup_df)
                     
                     if not summary.empty:
-                        cols = st.columns(len(summary))
-                        for s_idx, r in enumerate(summary.to_dict(orient="records")):
-                            with cols[s_idx]:
-                                with st.container(border=True):
+                        with st.container(horizontal=True):
+                            for r in summary.to_dict(orient="records"):
+                                with st.container(border=True, width="content"):
                                     st.metric(
                                         label=f"Produktion: {r['Für_Produktion_Am']}",
                                         value=r["formatted_cost"],
@@ -322,8 +322,25 @@ if not df_cogs.empty:
             st.info("Alle Lieferanten-Felder sind leer.")
     else:
         st.success("Aktuell ausreichender Materialbestand für den geplanten Produktionszeitraum! Keine Bestellungen notwendig.")
-        
-    # --- B. DETAILLIERTE STÜCKLISTEN-AUFLÖSUNG ---
+
+    # --- B. EXPORT-FUNKTION (EXCEL) ---
+    export_filename = f"Material_und_Produktionsplan_{datetime.date.today().strftime('%Y-%m-%d')}.xlsx"
+    st.download_button(
+        label="Gesamtübersicht exportieren (Excel)",
+        data=lambda: export_planning_to_excel(
+            material_orders,
+            production_plan,
+            target_month_dates,
+            month_labels,
+        ),
+        file_name=export_filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        icon=":material/download:",
+        help="Erstellt beim Klick eine Excel-Arbeitsmappe mit den Lieferanten-Bestelllisten und anstehenden Produktionsaufträgen.",
+    )
+
+    # --- C. DETAILLIERTE STÜCKLISTEN-AUFLÖSUNG ---
     if not material_details.empty:
         st.write("---")
         st.subheader("📋 Detaillierte Materialverwendung pro Produkt")

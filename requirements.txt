@@ -5,3 +5,4 @@ google-cloud-bigquery
 python-dotenv
 db-dtypes
 google-cloud-bigquery-storage
+openpyxl
