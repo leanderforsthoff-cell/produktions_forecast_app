@@ -39,7 +39,7 @@ Befolge diese Schritte, um das Projekt lokal auf deinem Rechner zum Laufen zu br
 Es wird empfohlen, eine isolierte Python-Umgebung zu nutzen. Öffne dein Terminal im Projektordner und führe folgenden Befehl aus:
 
 ```bash
-python -m venv venv
+python -m venv .venv
 ```
 
 ### 2. Virtuelle Umgebung aktivieren

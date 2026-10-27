@@ -172,13 +172,25 @@ for m_idx, m_label in enumerate(month_labels, start=1):
 edited_df = st.data_editor(
     st.session_state.plan_data,
     column_config=column_config,
+    column_order=list(column_config.keys()),
     hide_index=True,
     width='stretch',
     key=f"data_editor_{horizon_months}"
 )
 
 # ==========================================
-# 3. PRODUKTIONSBEDARF BERECHNEN
+# 3. DATEN SPEICHERN
+# ==========================================
+if st.button("💾 Forecast speichern", type="primary"):
+    with st.spinner("Lösche alte Daten dieses Monats und speichere neu..."):
+        try:
+            save_forecast_to_bq(edited_df, target_month_dates)
+            st.success("Erfolgreich gespeichert! (Alte Speicherungen von diesem Meeting wurden sauber überschrieben).")
+        except Exception as e:
+            st.error(f"Fehler beim Speichern: {e}")
+
+# ==========================================
+# 4. PRODUKTIONSBEDARF BERECHNEN
 # ==========================================
 st.divider()
 st.header("2. Produktionsbedarf & Bestelltermine")
@@ -237,17 +249,6 @@ if out_of_stock_warnings:
 # --- C. UI-AUFBEREITUNG DER TABELLE ---
 display_plan = format_display_plan(production_plan, target_month_dates, month_labels)
 st.dataframe(display_plan, hide_index=True, width='content')
-
-# ==========================================
-# 4. DATEN SPEICHERN
-# ==========================================
-if st.button("💾 Forecast speichern", type="primary"):
-    with st.spinner("Lösche alte Daten dieses Monats und speichere neu..."):
-        try:
-            save_forecast_to_bq(edited_df, production_plan, target_month_dates)
-            st.success("Erfolgreich gespeichert! (Alte Speicherungen von diesem Meeting wurden sauber überschrieben).")
-        except Exception as e:
-            st.error(f"Fehler beim Speichern: {e}")
 
 # ==========================================
 # 5. MATERIALBEDARFSPLANUNG (MRP)

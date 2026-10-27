@@ -48,10 +48,11 @@ def build_initial_planning_matrix(inventory_df, history_df, target_months):
     Returns:
         pd.DataFrame: Planungsmatrix mit Ist-Bestand, Systemprognose und initialen manuellen Werten.
     """
+    cols = ["Artikelnummer", "Artikelname", "Aktueller_Bestand"]
+    for m in range(1, len(target_months) + 1):
+        cols.extend([f"System_M{m}", f"Manuell_M{m}"])
+
     if inventory_df is None or inventory_df.empty:
-        cols = ["Artikelnummer", "Artikelname", "Aktueller_Bestand"]
-        for m in range(1, len(target_months) + 1):
-            cols.extend([f"System_M{m}", f"Manuell_M{m}"])
         return pd.DataFrame(columns=cols)
 
     forecast = generate_system_forecast(inventory_df, history_df, target_months)
@@ -65,7 +66,9 @@ def build_initial_planning_matrix(inventory_df, history_df, target_months):
         else:
             df_merged[man_col] = 0
 
-    return df_merged
+    ordered_cols = [c for c in cols if c in df_merged.columns]
+    extra_cols = [c for c in df_merged.columns if c not in ordered_cols]
+    return df_merged[ordered_cols + extra_cols]
 
 
 def load_and_prepare_data(target_months, article_list, fetch_inventory_fn, fetch_history_fn):

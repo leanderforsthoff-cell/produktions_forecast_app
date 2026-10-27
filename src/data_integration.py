@@ -117,7 +117,7 @@ def fetch_historical_sales(article_list, client=None):
     return df
 
 
-def save_forecast_to_bq(edited_df, production_plan, target_months, client=None):
+def save_forecast_to_bq(edited_df, target_months, client=None):
     """Speichert den aktuellen Planungs- und Produktions-Snapshot idempotent in BigQuery."""
     if edited_df.empty or not target_months:
         return
@@ -136,23 +136,19 @@ def save_forecast_to_bq(edited_df, production_plan, target_months, client=None):
     except NotFound:
         pass
 
-    df_combined = pd.merge(edited_df, production_plan, on="Artikelnummer", suffixes=("", "_prod"))
     month_records = []
 
     for m_idx, date_obj in enumerate(target_months, start=1):
         sys_col, man_col = f"System_M{m_idx}", f"Manuell_M{m_idx}"
-        prod_col, order_col = f"Produktion_M{m_idx}", f"Bestelldatum_M{m_idx}"
 
-        if sys_col in df_combined.columns and man_col in df_combined.columns:
+        if sys_col in edited_df.columns and man_col in edited_df.columns:
             month_records.append(pd.DataFrame({
                 "Planungsmonat": heute.replace(day=1),
                 "Speicherzeitpunkt": timestamp_now,
-                "Artikelnummer": df_combined["Artikelnummer"],
+                "Artikelnummer": edited_df["Artikelnummer"],
                 "Zielmonat": date_obj,
-                "System_Forecast": df_combined[sys_col].fillna(0).astype(int),
-                "Manuell_Forecast": df_combined[man_col].fillna(0).astype(int),
-                "Produktionsbedarf": df_combined[prod_col].fillna(0).astype(int) if prod_col in df_combined.columns else 0,
-                "Spaetestes_Bestelldatum": df_combined[order_col] if order_col in df_combined.columns else None
+                "System_Forecast": edited_df[sys_col].fillna(0).astype(int),
+                "Manuell_Forecast": edited_df[man_col].fillna(0).astype(int)
             }))
 
     if not month_records:
